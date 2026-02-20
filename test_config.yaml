@@ -1,0 +1,27 @@
+kafka:
+  bootstrap_servers: "localhost:9092"
+  security_protocol: PLAINTEXT   # or SASL_SSL etc.
+
+monitoring:
+  sample_interval_seconds: 2
+  offline_sample_interval_seconds: 5
+  report_interval_seconds: 3
+  housekeeping_interval_seconds: 5
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 100
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: 5
+  online_lag_threshold_seconds: 10
+
+database:
+  path: "/tmp/state.db"
+
+output:
+  json_path: "/tmp/lag.json"
+
+exclude:
+  topics:
+    - "__consumer_offsets"
+    - "__transaction_state"
+  groups:
+    - "some-legacy-group"

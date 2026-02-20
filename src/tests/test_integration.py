@@ -470,3 +470,216 @@ class TestOfflineDetection:
         finally:
             sampler_module.time.sleep = original_sleep_sampler
             reporter_module.time.sleep = original_sleep_reporter
+
+
+class TestHousekeepingUnderLoad:
+    """Task 22: Integration Test - Housekeeping Under Load"""
+
+    def test_housekeeping_prunes_partition_offsets(
+        self, test_config, test_db, admin_client
+    ):
+        """Verify housekeeping prunes partition_offsets to max_entries_per_partition."""
+        from sampler import Sampler
+        from state_manager import StateManager
+        import sampler as sampler_module
+
+        original_sleep = sampler_module.time.sleep
+        sampler_module.time.sleep = lambda x: None
+
+        try:
+            state_manager = StateManager(test_db, test_config)
+
+            shutdown_event = threading.Event()
+            sampler = Sampler(test_config, test_db, admin_client, state_manager)
+
+            sampler_thread = threading.Thread(
+                target=sampler.run, args=(shutdown_event,)
+            )
+            sampler_thread.start()
+            time.sleep(2)
+            shutdown_event.set()
+            sampler_thread.join(timeout=5)
+
+            cur = test_db.cursor()
+            cur.execute(
+                "SELECT COUNT(*) FROM partition_offsets WHERE topic = 'test' AND partition = 0"
+            )
+            initial_count = cur.fetchone()[0]
+            print(f"Initial partition_offsets count: {initial_count}")
+
+            for i in range(350):
+                cur.execute(
+                    "INSERT INTO partition_offsets (topic, partition, offset, sampled_at) VALUES (?, ?, ?, ?)",
+                    ("test", 0, 1000 + i, 1700000000 + i),
+                )
+            test_db.commit()
+
+            cur.execute(
+                "SELECT COUNT(*) FROM partition_offsets WHERE topic = 'test' AND partition = 0"
+            )
+            before_count = cur.fetchone()[0]
+            print(f"Before housekeeping: {before_count}")
+            assert before_count > 300, "Should have more than 300 rows before pruning"
+
+            from housekeeping import Housekeeping
+            import housekeeping as hk_module
+
+            original_sleep_hk = hk_module.time.sleep
+            hk_module.time.sleep = lambda x: None
+
+            try:
+                hk = Housekeeping(test_config, test_db)
+                hk._run_cycle()
+            finally:
+                hk_module.time.sleep = original_sleep_hk
+
+            cur.execute(
+                "SELECT COUNT(*) FROM partition_offsets WHERE topic = 'test' AND partition = 0"
+            )
+            after_count = cur.fetchone()[0]
+            print(f"After housekeeping: {after_count}")
+            assert after_count <= 300, (
+                f"Should have at most 300 rows, got {after_count}"
+            )
+        finally:
+            sampler_module.time.sleep = original_sleep
+
+    def test_housekeeping_retains_most_recent_rows(
+        self, test_config, test_db, admin_client
+    ):
+        """Verify housekeeping retains most recent rows (by timestamp)."""
+        from sampler import Sampler
+        from state_manager import StateManager
+        import sampler as sampler_module
+
+        original_sleep = sampler_module.time.sleep
+        sampler_module.time.sleep = lambda x: None
+
+        try:
+            state_manager = StateManager(test_db, test_config)
+
+            shutdown_event = threading.Event()
+            sampler = Sampler(test_config, test_db, admin_client, state_manager)
+
+            sampler_thread = threading.Thread(
+                target=sampler.run, args=(shutdown_event,)
+            )
+            sampler_thread.start()
+            time.sleep(2)
+            shutdown_event.set()
+            sampler_thread.join(timeout=5)
+
+            cur = test_db.cursor()
+
+            base_time = 1700000000
+            for i in range(350):
+                cur.execute(
+                    "INSERT INTO partition_offsets (topic, partition, offset, sampled_at) VALUES (?, ?, ?, ?)",
+                    ("test-retain", 0, 2000 + i, base_time + i),
+                )
+            test_db.commit()
+
+            max_ts_before = base_time + 349
+
+            from housekeeping import Housekeeping
+            import housekeeping as hk_module
+
+            original_sleep_hk = hk_module.time.sleep
+            hk_module.time.sleep = lambda x: None
+
+            try:
+                hk = Housekeeping(test_config, test_db)
+                hk._run_cycle()
+            finally:
+                hk_module.time.sleep = original_sleep_hk
+
+            cur.execute(
+                "SELECT MAX(sampled_at) FROM partition_offsets WHERE topic = 'test-retain' AND partition = 0"
+            )
+            max_ts_after = cur.fetchone()[0]
+            print(f"Max timestamp after pruning: {max_ts_after}")
+            assert max_ts_after == max_ts_before, "Should retain most recent rows"
+        finally:
+            sampler_module.time.sleep = original_sleep
+
+    def test_housekeeping_prunes_consumer_commits(
+        self, test_config, test_db, admin_client
+    ):
+        """Verify housekeeping prunes consumer_commits to max_commit_entries_per_partition."""
+        from sampler import Sampler
+        from state_manager import StateManager
+        import sampler as sampler_module
+
+        original_sleep = sampler_module.time.sleep
+        sampler_module.time.sleep = lambda x: None
+
+        try:
+            state_manager = StateManager(test_db, test_config)
+
+            shutdown_event = threading.Event()
+            sampler = Sampler(test_config, test_db, admin_client, state_manager)
+
+            sampler_thread = threading.Thread(
+                target=sampler.run, args=(shutdown_event,)
+            )
+            sampler_thread.start()
+            time.sleep(2)
+            shutdown_event.set()
+            sampler_thread.join(timeout=5)
+
+            cur = test_db.cursor()
+
+            for i in range(150):
+                cur.execute(
+                    "INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at) VALUES (?, ?, ?, ?, ?)",
+                    ("test-group", "test", 0, 3000 + i, 1700000000 + i),
+                )
+            test_db.commit()
+
+            cur.execute(
+                "SELECT COUNT(*) FROM consumer_commits WHERE group_id = 'test-group'"
+            )
+            before_count = cur.fetchone()[0]
+            print(f"consumer_commits before: {before_count}")
+            assert before_count > 100, "Should have more than 100 rows before pruning"
+
+            from housekeeping import Housekeeping
+            import housekeeping as hk_module
+
+            original_sleep_hk = hk_module.time.sleep
+            hk_module.time.sleep = lambda x: None
+
+            try:
+                hk = Housekeeping(test_config, test_db)
+                hk._run_cycle()
+            finally:
+                hk_module.time.sleep = original_sleep_hk
+
+            cur.execute(
+                "SELECT COUNT(*) FROM consumer_commits WHERE group_id = 'test-group'"
+            )
+            after_count = cur.fetchone()[0]
+            print(f"consumer_commits after: {after_count}")
+            assert after_count <= 100, (
+                f"Should have at most 100 rows, got {after_count}"
+            )
+        finally:
+            sampler_module.time.sleep = original_sleep
+
+    def test_incremental_vacuum_runs_without_error(self, test_config, test_db):
+        """Verify incremental vacuum runs without error on in-memory database."""
+        from housekeeping import Housekeeping
+        import housekeeping as hk_module
+
+        original_sleep = hk_module.time.sleep
+        hk_module.time.sleep = lambda x: None
+
+        try:
+            hk = Housekeeping(test_config, test_db)
+            shutdown_event = threading.Event()
+            shutdown_event.set()
+            hk.run(shutdown_event)
+        except Exception as e:
+            pytest.fail(f"Incremental vacuum should not raise: {e}")
+        finally:
+            hk_module.time.sleep = original_sleep
