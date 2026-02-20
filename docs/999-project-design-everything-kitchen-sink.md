@@ -524,7 +524,7 @@ Establish the repository structure, dependency management, and verify the Python
 - A sample `config.yaml` is present and matches the schema defined in this document
 - All empty stub files are importable without error (`python -c "import module_name"` succeeds for each)
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -542,7 +542,7 @@ All modules receive a validated `Config` object rather than reading files or env
 - Optional fields (e.g. security_protocol) have sensible defaults applied if absent
 - No other module reads `config.yaml` directly
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -560,7 +560,7 @@ All SQLite interaction must be isolated in one module. This keeps SQL out of bus
 - No function raises an unhandled exception — all database errors are propagated as standard Python exceptions for callers to handle
 - The module has no imports from any other project module
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -578,7 +578,7 @@ The interpolation engine is the mathematical core of the system. It must be impl
 - `format_lag_display` returns `"< 1 minute"` for any value under 60 seconds including 0, and produces grammatically correct singular/plural output (e.g. `"1 minute"` not `"1 minutes"`)
 - The module has no imports from any other project module and no I/O of any kind
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -595,7 +595,7 @@ All `confluent-kafka` usage must be isolated here so the rest of the system has 
 - No other project module imports from `confluent-kafka`
 - The module accepts a `Config` object and an `AdminClient` object as arguments — it does not construct its own config or client internally (except `build_admin_client`)
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -612,7 +612,7 @@ Threads must not share mutable state without synchronisation. The state manager 
 - `get_all_group_statuses` similarly returns a deep copy
 - If a group/topic combination has no recorded status, `get_group_status` returns a default ONLINE state dict rather than None
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -632,7 +632,7 @@ The sampler is the data collection engine. It drives all writes to `partition_of
 - The thread checks `shutdown_event.is_set()` at the top of every cycle and exits cleanly
 - Exceptions from kafka_client calls do not crash the sampler — the cycle is skipped and the thread sleeps normally
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -652,7 +652,7 @@ The reporter transforms raw database state into the final consumer-facing JSON o
 - If an error occurs during calculation for a specific group/topic, that entry is omitted from the output and the error is logged — the rest of the output is still written
 - The thread checks `shutdown_event.is_set()` at the top of every cycle and exits cleanly
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -672,7 +672,7 @@ Without periodic pruning the database grows unboundedly. Housekeeping enforces c
 - The thread checks `shutdown_event.is_set()` at the top of every cycle and exits cleanly
 - Any database error during housekeeping is logged but does not crash the thread
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -693,7 +693,7 @@ The entry point owns the lifecycle of all other components. It is responsible fo
 - On shutdown: joins all threads with a 10-second timeout each, closes the DB connection, exits 0
 - If a thread fails to join within the timeout, logs a warning and exits anyway
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -711,7 +711,7 @@ Config loading is the first thing that runs and must fail clearly. Tests verify 
 - Tests use `tmp_path` pytest fixture to create temporary config files — no hardcoded paths
 - All tests pass with `pytest tests/test_config.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -735,7 +735,7 @@ Database functions must be verified against real SQLite behaviour. Tests use in-
 - Test: exclusion checks return correct boolean for both config-excluded and table-excluded entries
 - All tests pass with `pytest tests/test_database.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -764,7 +764,7 @@ The interpolation engine is pure logic and must be tested exhaustively. Every ed
 - Test: `format_lag_display` for 90000 → `"1 day 1 hour"`
 - All tests pass with `pytest tests/test_interpolation.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -785,7 +785,7 @@ Thread safety is critical and must be verified. The state manager's contract —
 - Test: concurrent access — use `threading.Thread` to run multiple simultaneous reads and writes, verify no data corruption and no deadlock (run for at least 1 second with 10 threads)
 - All tests pass with `pytest tests/test_state_manager.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -807,7 +807,7 @@ The sampler's write cadence and state machine logic must be verified without req
 - Test: Kafka call failure (mock returns empty dict) — sampler cycle completes without exception
 - All tests pass with `pytest tests/test_sampler.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -828,7 +828,7 @@ The reporter's output format and calculation pipeline must be verified. The atom
 - Test: calculation error for one group does not prevent output of other groups
 - All tests pass with `pytest tests/test_reporter.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -848,7 +848,7 @@ Housekeeping must reliably enforce row limits and must never accidentally delete
 - Test: `run_incremental_vacuum` completes without error on an in-memory database
 - All tests pass with `pytest tests/test_housekeeping.py`
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -863,7 +863,7 @@ Verify the entire unit test suite passes cleanly as a whole before proceeding to
 - Test coverage (if `pytest-cov` is available) shows >80% coverage across all non-integration modules
 - All tests complete in under 30 seconds
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -881,7 +881,7 @@ Verify the system can connect to a real Kafka cluster, discover consumer groups 
 - `group_status` table contains entries for all monitored groups with status ONLINE
 - No errors in logs during the cycle
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -901,7 +901,7 @@ Verify the reporter produces correct, valid JSON output against real Kafka data.
 - `status` is `"online"` for all known-active groups
 - File is updated on each reporter cycle
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -921,7 +921,7 @@ Verify the state machine transitions work correctly against a real Kafka cluster
 - JSON output shows `"status": "recovering"` during recovery and `"status": "online"` after full recovery
 - Verify `partition_offsets` write frequency returns to fine cadence after ONLINE transition
 
-**Status:** TODO
+**Status:** DONE
 
 ---
 
@@ -940,4 +940,4 @@ Verify housekeeping correctly enforces row limits on a real database that has be
 - Database file size is stable or decreasing over time (incremental vacuum is working)
 - No errors or warnings in logs during housekeeping
 
-**Status:** TODO
+**Status:** DONE

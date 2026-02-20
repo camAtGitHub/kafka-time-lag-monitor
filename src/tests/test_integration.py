@@ -1,7 +1,7 @@
 """Integration tests requiring live Kafka cluster.
 
 These tests require a running Kafka cluster and are run separately
-from the main test suite using: pytest src/tests/test_integration.py
+from the main test suite using: pytest src/tests/test_integration.py -m integration
 """
 
 import json
@@ -12,6 +12,8 @@ import threading
 import time
 
 import pytest
+
+pytestmark = pytest.mark.integration
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
