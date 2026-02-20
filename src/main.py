@@ -153,11 +153,14 @@ def main() -> int:
         logger.error(str(e))
         return 1
     
+    # Create admin client for worker threads
+    admin_client = kafka_client.build_admin_client(cfg)
+    
     # Create state manager
     state_mgr = state_manager.StateManager(db_conn, cfg)
     
     # Create worker instances
-    sampler_instance = sampler.Sampler(cfg, db_conn, kafka_client, state_mgr)
+    sampler_instance = sampler.Sampler(cfg, db_conn, admin_client, state_mgr)
     reporter_instance = reporter.Reporter(cfg, db_conn, state_mgr)
     housekeeping_instance = housekeeping.Housekeeping(cfg, db_conn)
     

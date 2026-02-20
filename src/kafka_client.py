@@ -14,13 +14,15 @@ logger = logging.getLogger(__name__)
 # Try to import confluent-kafka, but allow module to be imported without it
 # (for testing environments without Kafka dependencies)
 try:
-    from confluent_kafka import TopicPartition
-    from confluent_kafka.admin import AdminClient
+    from confluent_kafka import TopicPartition, ConsumerGroupTopicPartitions
+    from confluent_kafka.admin import AdminClient, OffsetSpec
     _KAFKA_AVAILABLE = True
 except ImportError:
     _KAFKA_AVAILABLE = False
     AdminClient = Any
     TopicPartition = Any
+    ConsumerGroupTopicPartitions = Any
+    OffsetSpec = Any
 
 
 def build_admin_client(config: Config) -> AdminClient:
@@ -89,23 +91,24 @@ def get_committed_offsets(
         Empty dict on error.
     """
     try:
-        # Build TopicPartition list
         tps = [TopicPartition(topic, partition) for topic, partition in topic_partitions]
         
-        future = admin_client.list_consumer_group_offsets(
-            group_id,
-            partitions=tps
-        )
-        result = future.result()
+        groups = [ConsumerGroupTopicPartitions(group_id, tps)]
+        future_map = admin_client.list_consumer_group_offsets(groups)
         
         offsets = {}
-        for tp in result.topic_partitions:
-            if tp.error is None and tp.offset >= 0:
-                offsets[(tp.topic, tp.partition)] = tp.offset
-            elif tp.error:
-                logger.warning(
-                    f"Error getting offset for {group_id}/{tp.topic}/{tp.partition}: {tp.error}"
-                )
+        for cg_id, future in future_map.items():
+            try:
+                result = future.result()
+                for tp in result.topic_partitions:
+                    if tp.error is None and tp.offset >= 0:
+                        offsets[(tp.topic, tp.partition)] = tp.offset
+                    elif tp.error:
+                        logger.warning(
+                            f"Error getting offset for {group_id}/{tp.topic}/{tp.partition}: {tp.error}"
+                        )
+            except Exception as e:
+                logger.warning(f"Error getting offsets for {cg_id}: {e}")
         
         return offsets
     except Exception as e:
@@ -128,12 +131,9 @@ def get_latest_produced_offsets(
         Empty dict on error.
     """
     try:
-        # Build request dict for list_offsets
-        # -1 means latest offset (OFFSET_END)
         request = {}
         for topic, partition in topic_partitions:
-            key = TopicPartition(topic, partition)
-            request[key] = {'partition': partition, 'topic': topic, 'offset': -1}
+            request[TopicPartition(topic, partition)] = OffsetSpec.latest()
         
         results = admin_client.list_offsets(request)
         
@@ -141,12 +141,8 @@ def get_latest_produced_offsets(
         for tp_obj, future in results.items():
             try:
                 result = future.result()
-                if result.error is None:
-                    offsets[(tp_obj.topic, tp_obj.partition)] = result.offset
-                else:
-                    logger.warning(
-                        f"Error getting latest offset for {tp_obj.topic}/{tp_obj.partition}: {result.error}"
-                    )
+                # ListOffsetsResultInfo has 'offset' but no 'error' attribute
+                offsets[(tp_obj.topic, tp_obj.partition)] = result.offset
             except Exception as e:
                 logger.warning(
                     f"Exception getting latest offset for {tp_obj.topic}/{tp_obj.partition}: {e}"

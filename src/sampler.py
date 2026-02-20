@@ -175,7 +175,9 @@ class Sampler:
         
         # Step 5e: Evaluate state machine for each topic
         for topic in topic_partitions_for_group:
-            self._evaluate_state_machine(group_id, topic, cycle_start)
+            self._evaluate_state_machine(
+                group_id, topic, committed_offsets, latest_offsets, cycle_start
+            )
     
     def _write_partition_offset_if_needed(
         self,
@@ -233,6 +235,8 @@ class Sampler:
         self,
         group_id: str,
         topic: str,
+        committed_offsets: Dict[Tuple[str, int], int],
+        latest_offsets: Dict[Tuple[str, int], int],
         cycle_start: float
     ) -> None:
         """Evaluate and transition the state machine for a group/topic.
@@ -240,30 +244,23 @@ class Sampler:
         Args:
             group_id: Consumer group ID
             topic: Topic name
+            committed_offsets: Current committed offsets from Kafka
+            latest_offsets: Latest produced offsets from Kafka
             cycle_start: Timestamp when the cycle started
         """
-        # Get current status
         status = self._state_manager.get_group_status(group_id, topic)
         current_status = status["status"]
         consecutive_static = status["consecutive_static"]
         last_advancing_at = status["last_advancing_at"]
         status_changed_at = status["status_changed_at"]
         
-        # Get recent commits for all partitions of this topic
-        # First, we need to know which partitions this group consumes for this topic
-        # Get from database - query recent commits
-        from kafka_client import get_committed_offsets
-        
-        # We need to query all possible partitions - get from the consumed topics
-        # For now, query the database for partitions we've seen
         partitions = self._get_partitions_for_topic(group_id, topic)
         
         if not partitions:
             return
         
-        # Check if all partitions are static
         threshold = self._config.monitoring.offline_detection_consecutive_samples
-        all_static = True
+        all_static_with_lag = True
         any_advancing = False
         
         for partition in partitions:
@@ -271,22 +268,22 @@ class Sampler:
                 self._db_conn, group_id, topic, partition, threshold
             )
             
-            # Check if we have enough samples
             if len(recent_commits) < threshold:
-                # Not enough data yet, consider as advancing
-                all_static = False
+                all_static_with_lag = False
                 any_advancing = True
                 break
             
-            # Check if all N values are identical
             offsets = [commit[0] for commit in recent_commits]
-            if len(set(offsets)) == 1:
-                # Static
+            committed = offsets[0] if offsets else 0
+            produced = latest_offsets.get((topic, partition), 0)
+            has_lag = committed < produced
+            
+            if len(set(offsets)) == 1 and has_lag:
                 pass
             else:
-                # Advancing
-                all_static = False
-                any_advancing = True
+                all_static_with_lag = False
+                if len(set(offsets)) != 1:
+                    any_advancing = True
                 break
         
         current_time = int(cycle_start)
@@ -294,8 +291,7 @@ class Sampler:
         new_consecutive_static = consecutive_static
         new_last_advancing_at = last_advancing_at
         
-        if all_static:
-            # Increment consecutive_static counter
+        if all_static_with_lag:
             new_consecutive_static = consecutive_static + 1
             
             if new_consecutive_static >= threshold:
@@ -303,20 +299,16 @@ class Sampler:
                     new_status = "OFFLINE"
                 elif current_status == "RECOVERING":
                     new_status = "OFFLINE"
-                # If already OFFLINE, stay OFFLINE
         elif any_advancing:
-            # Reset counter and update last_advancing_at
             new_consecutive_static = 0
             new_last_advancing_at = current_time
             
             if current_status == "OFFLINE":
                 new_status = "RECOVERING"
             elif current_status == "RECOVERING":
-                # Check if we can transition to ONLINE
                 lag_threshold = self._config.monitoring.online_lag_threshold_seconds
                 min_duration = self._config.monitoring.recovering_minimum_duration_seconds
                 
-                # Calculate current max lag
                 max_lag = self._calculate_max_lag(group_id, topic, partitions, current_time)
                 time_in_recovering = current_time - status_changed_at
                 

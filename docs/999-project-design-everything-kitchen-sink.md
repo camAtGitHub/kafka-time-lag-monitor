@@ -21,7 +21,7 @@ The system maintains a per-partition table of historical snapshots: at a given p
 Consumer groups are not always active. To handle groups that go offline (and may stay offline for days), the system implements a three-state machine per group/topic:
 
 - **ONLINE** — offset is advancing and lag is below threshold. Fine-grained sampling (every 60 seconds).
-- **OFFLINE** — offset has been static for N consecutive samples. Coarse sampling (every 30 minutes).
+- **OFFLINE** — committed offset has been static for N consecutive samples AND there is lag (produced > committed). Coarse sampling (every 30 minutes).
 - **RECOVERING** — offset is advancing again after being offline, but lag is still above the online threshold. Coarse sampling maintained until lag drops sufficiently.
 
 The write cadence change is the key design insight: rather than writing at full rate and performing complex downsampling during housekeeping, the system writes less frequently for groups in non-ONLINE states. Housekeeping is therefore a simple count-based operation — keep the last N rows per partition — and the coarser resolution for offline/recovering groups emerges naturally from the reduced write frequency.
@@ -344,14 +344,17 @@ Called per `(group_id, topic)` after processing all partitions for that combinat
 ```
 1. Pull last N committed_offset values per partition for this group/topic from consumer_commits
    (N = offline_detection_consecutive_samples from config)
-2. For each partition: check if all N values are identical (static)
-3. If ALL partitions are static:
+2. For each partition:
+   a. Check if all N values are identical (static)
+   b. Check if there is lag: committed_offset < latest_produced_offset
+   c. Partition is "static with lag" only if BOTH conditions are true
+3. If ALL partitions are static with lag:
     - Increment consecutive_static counter
     - If consecutive_static >= threshold:
         - If status is ONLINE → transition to OFFLINE
         - If status is RECOVERING → transition back to OFFLINE
         - Update last_advancing_at is NOT updated
-4. If ANY partition is advancing (not all static):
+4. If ANY partition is advancing (committed offsets changing):
     - Reset consecutive_static = 0
     - Update last_advancing_at = now
     - If status is OFFLINE → transition to RECOVERING
@@ -362,6 +365,8 @@ Called per `(group_id, topic)` after processing all partitions for that combinat
         - If both true → transition to ONLINE
 5. Persist any status change via state_manager.set_group_status()
 ```
+
+**Important:** A consumer on a low-flow topic may have static committed offsets because there's simply no new data. This is NOT offline — it's caught up and waiting. Only transition to OFFLINE when the consumer is falling behind (lag exists) AND isn't making progress.
 
 ### Write Cadence Detail
 

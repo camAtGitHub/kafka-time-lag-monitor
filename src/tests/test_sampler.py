@@ -221,14 +221,13 @@ class TestSamplerStateMachine:
     """Tests for state machine transitions."""
 
     def test_online_to_offline_transition(self, db_conn):
-        """State machine ONLINE→OFFLINE transition"""
+        """State machine ONLINE→OFFLINE transition - requires static offsets AND lag"""
         config = make_test_config()
         state_manager = MockStateManager()
         
         current_time = int(time.time())
         threshold = config.monitoring.offline_detection_consecutive_samples
         
-        # Set consecutive_static close to threshold so one more static sample triggers transition
         state_manager.set_group_status(
             "group1", "topic1", "ONLINE", current_time, 0, threshold - 1
         )
@@ -245,7 +244,10 @@ class TestSamplerStateMachine:
         
         s = Sampler(config, db_conn, kafka_client, state_manager)
         
-        s._evaluate_state_machine("group1", "topic1", current_time)
+        committed_offsets = {("topic1", 0): 100}
+        latest_offsets = {("topic1", 0): 200}
+        
+        s._evaluate_state_machine("group1", "topic1", committed_offsets, latest_offsets, current_time)
         
         status = state_manager.get_group_status("group1", "topic1")
         
@@ -276,7 +278,10 @@ class TestSamplerStateMachine:
         
         s = Sampler(config, db_conn, kafka_client, state_manager)
         
-        s._evaluate_state_machine("group1", "topic1", current_time)
+        committed_offsets = {("topic1", 0): 102}
+        latest_offsets = {("topic1", 0): 200}
+        
+        s._evaluate_state_machine("group1", "topic1", committed_offsets, latest_offsets, current_time)
         
         status = state_manager.get_group_status("group1", "topic1")
         
@@ -315,21 +320,23 @@ class TestSamplerStateMachine:
         
         s = Sampler(config, db_conn, kafka_client, state_manager)
         
-        s._evaluate_state_machine("group1", "topic1", current_time)
+        committed_offsets = {("topic1", 0): 99}
+        latest_offsets = {("topic1", 0): 100}
+        
+        s._evaluate_state_machine("group1", "topic1", committed_offsets, latest_offsets, current_time)
         
         status = state_manager.get_group_status("group1", "topic1")
         
         assert status["status"] == "ONLINE"
 
     def test_recovering_to_offline_transition(self, db_conn):
-        """State machine RECOVERING→OFFLINE"""
+        """State machine RECOVERING→OFFLINE - requires static offsets AND lag"""
         config = make_test_config()
         state_manager = MockStateManager()
         
         current_time = int(time.time())
         threshold = config.monitoring.offline_detection_consecutive_samples
         
-        # Set consecutive_static close to threshold
         state_manager.set_group_status(
             "group1", "topic1", "RECOVERING", current_time - 1000, current_time - 100, threshold - 1
         )
@@ -346,11 +353,47 @@ class TestSamplerStateMachine:
         
         s = Sampler(config, db_conn, kafka_client, state_manager)
         
-        s._evaluate_state_machine("group1", "topic1", current_time)
+        committed_offsets = {("topic1", 0): 100}
+        latest_offsets = {("topic1", 0): 200}
+        
+        s._evaluate_state_machine("group1", "topic1", committed_offsets, latest_offsets, current_time)
         
         status = state_manager.get_group_status("group1", "topic1")
         
         assert status["status"] == "OFFLINE"
+
+    def test_static_without_lag_stays_online(self, db_conn):
+        """Static offsets without lag should NOT transition to OFFLINE (low-flow topic)"""
+        config = make_test_config()
+        state_manager = MockStateManager()
+        
+        current_time = int(time.time())
+        threshold = config.monitoring.offline_detection_consecutive_samples
+        
+        state_manager.set_group_status(
+            "group1", "topic1", "ONLINE", current_time, 0, threshold - 1
+        )
+        
+        for i in range(threshold):
+            db_conn.execute(
+                """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("group1", "topic1", 0, 100, current_time - (threshold - i - 1) * 60)
+            )
+        db_conn.commit()
+        
+        kafka_client = MockKafkaClient()
+        
+        s = Sampler(config, db_conn, kafka_client, state_manager)
+        
+        committed_offsets = {("topic1", 0): 100}
+        latest_offsets = {("topic1", 0): 100}
+        
+        s._evaluate_state_machine("group1", "topic1", committed_offsets, latest_offsets, current_time)
+        
+        status = state_manager.get_group_status("group1", "topic1")
+        
+        assert status["status"] == "ONLINE"
 
 
 class TestSamplerRunLoop:

@@ -21,7 +21,7 @@ The system maintains a per-partition table of historical snapshots: at a given p
 Consumer groups are not always active. To handle groups that go offline (and may stay offline for days), the system implements a three-state machine per group/topic:
 
 - **ONLINE** — offset is advancing and lag is below threshold. Fine-grained sampling (every 60 seconds).
-- **OFFLINE** — offset has been static for N consecutive samples. Coarse sampling (every 30 minutes).
+- **OFFLINE** — committed offset has been static for N consecutive samples AND there is lag (produced > committed). Coarse sampling (every 30 minutes).
 - **RECOVERING** — offset is advancing again after being offline, but lag is still above the online threshold. Coarse sampling maintained until lag drops sufficiently.
 
 The write cadence change is the key design insight: rather than writing at full rate and performing complex downsampling during housekeeping, the system writes less frequently for groups in non-ONLINE states. Housekeeping is therefore a simple count-based operation — keep the last N rows per partition — and the coarser resolution for offline/recovering groups emerges naturally from the reduced write frequency.
