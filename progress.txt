@@ -57,3 +57,13 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
 ---
 ## Progress updates
 
+## 2026-02-22 18:03 - TASK 32, 33, 34 - Sampler fixes
+- TASK 33: Fixed _evaluate_state_machine to not set any_advancing=True when history is sparse (insufficient data != advancing). This was causing false RECOVERING transitions.
+- TASK 32: Added augmentation of all_topic_partitions with idle groups' historical partitions from consumer_commits to keep partition_offsets fresh for idle groups
+- TASK 34: Fixed _handle_idle_group to preserve last_advancing_at from existing DB state instead of setting to current_time when marking groups as OFFLINE
+- Files changed: src/database.py, src/sampler.py, src/tests/test_database.py, src/tests/test_sampler.py
+- **Learnings for future iterations:**
+  - When fixing state machine bugs, tests may be testing buggy behavior - need to update tests to reflect correct behavior
+  - Added get_all_groups_with_history() function to database.py for finding idle groups with history
+  - The state machine is conservative: requires positive evidence of advancement, not absence of evidence of stasis
+---
