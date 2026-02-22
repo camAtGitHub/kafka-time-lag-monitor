@@ -43,3 +43,12 @@
   - Tests that create workers (StateManager, Reporter, Housekeeping) need initialized database - use `db_path_initialized` fixture
   - The existing design already implements proper per-thread connections as recommended in the task
 ---
+
+## 2026-02-22 - TASK 25
+- Added documentation in `state_manager.py` explaining the startup behavior for newly discovered groups
+- Added module-level docstring describing the startup blind spot: new groups start with consecutive_static=0 and will report as ONLINE for threshold cycles before potentially being detected as OFFLINE
+- Updated `get_group_status` docstring to reference this behavior
+- **Learnings for future iterations:**
+  - This is a known limitation, not a bug - groups with DB history are loaded correctly at startup
+  - The fix is documentation-only as specified in the task
+---
