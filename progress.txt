@@ -87,6 +87,15 @@
 
 ---
 
+## 2026-02-22 - TASK 30
+- Modified reporter.py to return "fine" resolution for both ONLINE and RECOVERING states
+- Updated test to reflect new expected behavior (RECOVERING should return "fine")
+- **Learnings for future iterations:**
+  - RECOVERING groups are actively consuming with advancing offsets, so they warrant "fine" resolution just like ONLINE groups
+  - Only OFFLINE status should produce "coarse" resolution
+
+---
+
 ## 2026-02-22 - TASK 29
 - Added validation in `run_incremental_vacuum` to ensure `pages` is a positive integer
 - Raises `ValueError` if pages is <= 0 or not an integer

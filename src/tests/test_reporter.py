@@ -386,10 +386,10 @@ class TestReporterDataResolution:
 
         assert output["consumers"][0]["data_resolution"] == "coarse"
 
-    def test_coarse_resolution_for_recovering_status(
+    def test_fine_resolution_for_recovering_status(
         self, db_path_initialized, mock_config, mock_state_manager
     ):
-        """Test that RECOVERING status produces coarse resolution."""
+        """Test that RECOVERING status produces fine resolution."""
         now = int(time.time())
 
         conn = database.get_connection(db_path_initialized)
@@ -412,7 +412,7 @@ class TestReporterDataResolution:
         with open(mock_config.output.json_path, "r") as f:
             output = json.load(f)
 
-        assert output["consumers"][0]["data_resolution"] == "coarse"
+        assert output["consumers"][0]["data_resolution"] == "fine"
 
 
 class TestReporterMultiplePartitions:

@@ -162,8 +162,8 @@ class Reporter:
             partition_lags
         )
 
-        # Determine data_resolution
-        data_resolution = "fine" if status == "online" else "coarse"
+        # Determine data_resolution - ONLINE and RECOVERING both have actively advancing offsets
+        data_resolution = "fine" if status in ("online", "recovering") else "coarse"
 
         # Build record
         record = {
