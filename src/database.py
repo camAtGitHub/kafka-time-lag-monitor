@@ -508,3 +508,16 @@ def has_group_history(conn: sqlite3.Connection, group_id: str) -> bool:
         (group_id,),
     )
     return cursor.fetchone() is not None
+
+
+def get_all_groups_with_history(conn: sqlite3.Connection) -> List[str]:
+    """Get all group IDs that have history in the database.
+
+    Args:
+        conn: Database connection
+
+    Returns:
+        List of group IDs with history
+    """
+    cursor = conn.execute("SELECT DISTINCT group_id FROM consumer_commits")
+    return [row[0] for row in cursor.fetchall()]

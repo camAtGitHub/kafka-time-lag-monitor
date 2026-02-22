@@ -401,3 +401,24 @@ class TestGroupHistory:
         """Test get_group_tracked_topics returns empty list for unknown group."""
         topics = get_group_tracked_topics(db_conn, "nonexistent-group")
         assert topics == []
+
+    def test_get_all_groups_with_history(self, db_conn):
+        """Test get_all_groups_with_history returns all groups with history."""
+        from database import (
+            insert_consumer_commit,
+            get_all_groups_with_history,
+        )
+
+        insert_consumer_commit(db_conn, "group-1", "topic1", 0, 100, 1234567890)
+        insert_consumer_commit(db_conn, "group-2", "topic1", 0, 200, 1234567890)
+        insert_consumer_commit(db_conn, "group-2", "topic2", 0, 300, 1234567890)
+
+        groups = get_all_groups_with_history(db_conn)
+        assert set(groups) == {"group-1", "group-2"}
+
+    def test_get_all_groups_with_history_empty(self, db_conn):
+        """Test get_all_groups_with_history returns empty list when no history."""
+        from database import get_all_groups_with_history
+
+        groups = get_all_groups_with_history(db_conn)
+        assert groups == []

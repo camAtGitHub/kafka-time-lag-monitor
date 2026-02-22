@@ -345,6 +345,16 @@ class TestSamplerStateMachine:
                VALUES (?, ?, ?, ?, ?)""",
             ("group1", "topic1", 0, 99, current_time),
         )
+        db_conn.execute(
+            """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("group1", "topic1", 0, 98, current_time - 10),
+        )
+        db_conn.execute(
+            """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("group1", "topic1", 0, 97, current_time - 20),
+        )
         db_conn.commit()
 
         kafka_client = MockKafkaClient()

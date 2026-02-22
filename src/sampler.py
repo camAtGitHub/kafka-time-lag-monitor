@@ -90,6 +90,23 @@ class Sampler:
                     for partitions in group_topic_partitions.values():
                         all_topic_partitions.update(partitions)
 
+                    # Augment with idle groups' historical partitions
+                    all_group_ids_with_history = database.get_all_groups_with_history(
+                        self._db_conn
+                    )
+                    active_group_set = set(active_groups)
+                    for group_id in all_group_ids_with_history:
+                        if group_id not in active_group_set:
+                            tracked_topics = database.get_group_tracked_topics(
+                                self._db_conn, group_id
+                            )
+                            for topic in tracked_topics:
+                                partitions = self._get_partitions_for_topic(
+                                    group_id, topic
+                                )
+                                for partition in partitions:
+                                    all_topic_partitions.add((topic, partition))
+
                     latest_offsets = {}
                     if all_topic_partitions:
                         latest_offsets = get_latest_produced_offsets(
@@ -259,7 +276,6 @@ class Sampler:
 
             if len(recent_commits) < threshold:
                 all_static_with_lag = False
-                any_advancing = True
                 break
 
             offsets = [commit[0] for commit in recent_commits]
@@ -403,12 +419,14 @@ class Sampler:
             )
             current_time = int(cycle_start)
             for topic in tracked_topics:
+                existing_status = self._state_manager.get_group_status(group_id, topic)
+                last_advancing_at = existing_status.get("last_advancing_at", 0)
                 self._state_manager.set_group_status(
                     group_id,
                     topic,
                     "OFFLINE",
                     current_time,
-                    current_time,
+                    last_advancing_at,
                     self._config.monitoring.offline_detection_consecutive_samples,
                 )
         else:
