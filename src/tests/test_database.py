@@ -9,6 +9,7 @@ from database import (
     get_interpolation_points,
     get_recent_commits,
     get_last_write_time,
+    get_last_stored_offset,
     get_group_status,
     upsert_group_status,
     load_all_group_statuses,
@@ -117,6 +118,18 @@ class TestPartitionOffsets:
         """Verify get_last_write_time returns None when no rows exist."""
         last_time = get_last_write_time(db_conn, "test-topic", 0)
         assert last_time is None
+
+    def test_get_last_stored_offset_returns_most_recent(self, db_conn):
+        """Verify get_last_stored_offset returns the most recent offset."""
+        insert_partition_offset(db_conn, "test-topic", 0, 1000, 1234567890)
+        insert_partition_offset(db_conn, "test-topic", 0, 1100, 1234567900)
+        last_offset = get_last_stored_offset(db_conn, "test-topic", 0)
+        assert last_offset == 1100
+
+    def test_get_last_stored_offset_returns_none_for_empty(self, db_conn):
+        """Verify get_last_stored_offset returns None when no rows exist."""
+        last_offset = get_last_stored_offset(db_conn, "test-topic", 0)
+        assert last_offset is None
 
 
 class TestConsumerCommits:

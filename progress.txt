@@ -76,3 +76,12 @@
   - Groups with DB history are identified by presence in consumer_commits table
   - When marking idle groups as OFFLINE, we need to iterate over all previously tracked topics for that group
 ---
+
+## 2026-02-22 - TASK 28
+- Added `get_last_stored_offset` function to efficiently fetch only the most recent offset
+- Updated `_write_partition_offset_if_needed` in sampler.py to use the new function instead of fetching all interpolation points
+- This replaces an unbounded query that fetched all historical rows just to get the latest offset
+- **Learnings for future iterations:**
+  - When you only need one value from a table, write a purpose-built query rather than fetching all rows and extracting one
+  - Follow the existing pattern in `get_last_write_time` for similar single-value queries
+

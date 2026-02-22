@@ -203,11 +203,8 @@ class Sampler:
             elapsed = current_time - last_write
 
             # Get the last stored offset
-            interpolation_points = database.get_interpolation_points(
+            last_stored_offset = database.get_last_stored_offset(
                 self._db_conn, topic, partition
-            )
-            last_stored_offset = (
-                interpolation_points[0][0] if interpolation_points else None
             )
 
             # Write if:

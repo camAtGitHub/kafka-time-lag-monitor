@@ -219,6 +219,29 @@ def get_last_write_time(
     return result if result is not None else None
 
 
+def get_last_stored_offset(
+    conn: sqlite3.Connection, topic: str, partition: int
+) -> Optional[int]:
+    """Get the most recent offset for a topic/partition.
+
+    Args:
+        conn: Database connection
+        topic: Topic name
+        partition: Partition number
+
+    Returns:
+        Most recent offset or None if no rows exist
+    """
+    cursor = conn.execute(
+        """SELECT offset FROM partition_offsets 
+           WHERE topic = ? AND partition = ? 
+           ORDER BY sampled_at DESC LIMIT 1""",
+        (topic, partition),
+    )
+    result = cursor.fetchone()
+    return result[0] if result is not None else None
+
+
 def get_group_status(
     conn: sqlite3.Connection, group_id: str, topic: str
 ) -> Optional[Dict[str, Any]]:
