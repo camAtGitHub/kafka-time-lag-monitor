@@ -52,3 +52,13 @@
   - This is a known limitation, not a bug - groups with DB history are loaded correctly at startup
   - The fix is documentation-only as specified in the task
 ---
+
+## 2026-02-22 - TASK 26
+- Modified `verify_kafka_connectivity` to return the verified AdminClient instead of just True
+- Removed duplicate AdminClient creation - now reuses the verified client
+- Changed return type from `bool` to `Any` (AdminClient)
+- Updated call site to use returned client instead of creating a new one
+- **Learnings for future iterations:**
+  - When a function creates a resource that's needed later, return it for reuse rather than creating another instance
+  - Keep using the parameter `kafka_client_module` consistently inside the function (not the module reference)
+---
