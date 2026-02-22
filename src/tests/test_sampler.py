@@ -79,7 +79,7 @@ class MockKafkaClient:
         return self._latest_offsets
 
     def get_all_consumed_topic_partitions(self, groups):
-        return list(self._latest_offsets.keys())
+        return {g: list(self._latest_offsets.keys()) for g in groups}
 
 
 def make_test_config():
@@ -209,14 +209,19 @@ class TestSamplerConsumerCommits:
         # Use a mock kafka client
         mock_kafka = MagicMock()
         mock_kafka.get_active_consumer_groups.return_value = ["group1"]
-        mock_kafka.get_all_consumed_topic_partitions.return_value = list(
-            topic_partitions.keys()
-        )
+        mock_kafka.get_all_consumed_topic_partitions.return_value = {
+            "group1": set(topic_partitions.keys())
+        }
 
         s = Sampler(config, db_conn, mock_kafka, state_manager)
 
         current_time = int(time.time())
-        s._process_group("group1", topic_partitions, topic_partitions, current_time)
+        s._process_group(
+            "group1",
+            {"group1": set(topic_partitions.keys())},
+            topic_partitions,
+            current_time,
+        )
 
         rows = db_conn.execute(
             "SELECT group_id, topic, partition, committed_offset FROM consumer_commits"
@@ -445,7 +450,9 @@ class TestSamplerErrorHandling:
 
         mock_kafka = MagicMock()
         mock_kafka.get_active_consumer_groups.return_value = ["group1"]
-        mock_kafka.get_all_consumed_topic_partitions.return_value = [("topic1", 0)]
+        mock_kafka.get_all_consumed_topic_partitions.return_value = {
+            "group1": {("topic1", 0)}
+        }
         mock_kafka.get_latest_produced_offsets.return_value = {("topic1", 0): 100}
         mock_kafka.get_committed_offsets.return_value = {("topic1", 0): 50}
 
@@ -563,3 +570,66 @@ class TestSamplerGetPartitions:
         partitions = s._get_partitions_for_topic("group1", "topic1")
 
         assert sorted(partitions) == [0, 1, 2]
+
+
+class TestSamplerPerGroupPartitions:
+    """Tests for per-group partition filtering."""
+
+    @patch("kafka_client.get_committed_offsets")
+    def test_process_group_uses_only_its_own_partitions(
+        self, mock_get_committed_offsets, db_conn
+    ):
+        """Each group should only query its own partitions, not all partitions."""
+        config = make_test_config()
+        state_manager = MockStateManager()
+
+        mock_kafka = MagicMock()
+
+        group_topic_partitions = {
+            "group1": {("topic1", 0), ("topic1", 1)},
+            "group2": {("topic2", 0), ("topic2", 1)},
+        }
+        latest_offsets = {
+            ("topic1", 0): 100,
+            ("topic1", 1): 100,
+            ("topic2", 0): 200,
+            ("topic2", 1): 200,
+        }
+        mock_get_committed_offsets.return_value = {("topic1", 0): 50, ("topic1", 1): 60}
+
+        s = Sampler(config, db_conn, mock_kafka, state_manager)
+
+        s._process_group(
+            "group1",
+            group_topic_partitions,
+            latest_offsets,
+            time.time(),
+        )
+
+        mock_get_committed_offsets.assert_called_once()
+        call_args = mock_get_committed_offsets.call_args
+        partitions_arg = call_args[0][2]
+
+        assert set(partitions_arg) == {("topic1", 0), ("topic1", 1)}
+
+    def test_group_with_no_partitions_logs_debug(self, db_conn, caplog):
+        """Group with no assigned partitions should log debug and return early."""
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+
+        config = make_test_config()
+        state_manager = MockStateManager()
+
+        mock_kafka = MagicMock()
+
+        s = Sampler(config, db_conn, mock_kafka, state_manager)
+
+        s._process_group(
+            "empty_group",
+            {"empty_group": set()},
+            {},
+            time.time(),
+        )
+
+        assert "No partitions assigned to group empty_group" in caplog.text

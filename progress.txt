@@ -13,9 +13,19 @@
 
 ---
 ## Codebase Patterns
-- put learnings here.
+- Kafka client functions in `kafka_client.py` catch all exceptions internally, log warnings, return empty/zero values — never raise
+- Module imports inside functions (e.g., `from kafka_client import get_committed_offsets` inside `_process_group`) require patching at the source module, not the calling module
+- Use `uv pip` instead of `pip`, `uv run python` instead of `python`
 
 
 ---
 ## Progress updates
 
+## 2026-02-22 - TASK 23
+- Fixed `_process_group` to use per-group partition assignments instead of querying all partitions for all groups
+- Changed `get_all_consumed_topic_partitions` return type from `Set[Tuple[str, int]]` to `Dict[str, Set[Tuple[str, int]]]`
+- Updated sampler to filter partitions per-group, reducing unnecessary Kafka traffic
+- **Learnings for future iterations:**
+  - When patching function imports inside methods, patch at the source module (`kafka_client.get_committed_offsets`) not the calling module
+  - The `describe_consumer_groups` call already provides per-group partition data — don't discard it
+---
