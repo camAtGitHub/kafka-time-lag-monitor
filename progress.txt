@@ -78,3 +78,13 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
   - When removing auto-commit from insert functions, all callers (tests and code) need to explicitly call commit_batch
   - Tests using worker threads need to use the worker's connection (e.g., s._db_conn) not the fixture connection for queries after operations
   - WAL mode should allow visibility across connections, but explicit commit is still needed for durability
+---
+
+## 2026-02-22 20:00 - TASK 36 - StateManager lock scope reduction
+- Reduced lock scope in set_group_status: lock now only protects in-memory dict update, DB write happens outside lock
+- Fixed thread-safety by creating new DB connection per write operation instead of sharing StateManager's connection
+- Files changed: src/state_manager.py
+- **Learnings for future iterations:**
+  - Moving DB I/O outside locks can expose pre-existing threading bugs - test with concurrent access
+  - SQLite connections are not thread-safe; create new connection per operation for concurrent access
+  - The original code serialized DB writes via the lock, masking the connection-sharing bug

@@ -113,11 +113,12 @@ class StateManager:
         }
 
         with self._lock:
-            # Update in-memory state
             self._state["group_statuses"][key] = status_dict
-            # Persist to database
+
+        db_conn = database.get_connection(self._db_path)
+        try:
             database.upsert_group_status(
-                self._db_conn,
+                db_conn,
                 group_id,
                 topic,
                 status,
@@ -125,6 +126,8 @@ class StateManager:
                 last_advancing_at,
                 consecutive_static,
             )
+        finally:
+            db_conn.close()
 
     def get_all_group_statuses(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         """Get a snapshot copy of all group statuses.
