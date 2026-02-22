@@ -21,95 +21,39 @@
 - Tests that use StateManager/Reporter/Housekeeping need initialized database; use `db_path_initialized` fixture from conftest.py
 - When calling `get_committed_offsets` from kafka_client, convert Set to List since the function expects List[Tuple[str, int]]
 
+---
+## Learnings
+Kafka / Distributed Systems
+
+When a function creates a resource that's needed later, return it for reuse rather than creating another instance
+The describe_consumer_groups call already provides per-group partition data — don't discard it
+Idle group detection relies on per-group partition assignments; groups with no active assignments properly return empty partition sets
+
+Testing / Patching
+
+When patching function imports inside methods, patch at the source module (e.g. kafka_client.get_committed_offsets) not the calling module
+Tests that create workers (StateManager, Reporter, Housekeeping) need an initialized database — use a db_path_initialized fixture
+Fix test fixtures to use db_path instead of passing connections directly
+
+SQLite
+
+PRAGMA auto_vacuum must be set BEFORE creating tables and requires an explicit commit
+PRAGMA statements don't support bound parameters — validate input first, then use an f-string
+When you only need one value from a table, write a purpose-built query rather than fetching all rows and extracting one
+
+Worker / Threading Patterns
+
+SQLite connections should be per-thread — pass db_path and let each worker create its own connection
+For timed worker loops: capture cycle_start, run work, calculate elapsed, subtract from interval, sleep max(0, remainder) — prevents back-to-back cycles when work exceeds the interval
+
+State / Business Logic
+
+New groups start with consecutive_static=0 and will report ONLINE for threshold cycles before being detectable as OFFLINE — this is a known startup blind spot, not a bug
+Groups with DB history are identified by presence in the consumer_commits table
+When marking idle groups as OFFLINE, iterate over all previously tracked topics for that group
+RECOVERING groups are actively consuming, so they warrant "fine" resolution — only OFFLINE should produce "coarse" resolution
+
 
 ---
 ## Progress updates
-
-## 2026-02-22 - TASK 23
-- Fixed `_process_group` to use per-group partition assignments instead of querying all partitions for all groups
-- Changed `get_all_consumed_topic_partitions` return type from `Set[Tuple[str, int]]` to `Dict[str, Set[Tuple[str, int]]]`
-- Updated sampler to filter partitions per-group, reducing unnecessary Kafka traffic
-- **Learnings for future iterations:**
-  - When patching function imports inside methods, patch at the source module (`kafka_client.get_committed_offsets`) not the calling module
-  - The `describe_consumer_groups` call already provides per-group partition data — don't discard it
----
-
-## 2026-02-22 - TASK 24
-- Verified that SQLite connection is already properly separated per thread - each worker receives `db_path` and creates its own connection via `database.get_connection(db_path)`
-- Fixed test fixtures to use `db_path` instead of passing connections directly
-- Fixed `database.py` to properly set `PRAGMA auto_vacuum=INCREMENTAL` before table creation with commit
-- Added `db_path_initialized` fixture in conftest.py for tests needing initialized database
-- **Learnings for future iterations:**
-  - SQLite PRAGMA auto_vacuum must be set BEFORE creating tables and requires explicit commit
-  - Tests that create workers (StateManager, Reporter, Housekeeping) need initialized database - use `db_path_initialized` fixture
-  - The existing design already implements proper per-thread connections as recommended in the task
----
-
-## 2026-02-22 - TASK 25
-- Added documentation in `state_manager.py` explaining the startup behavior for newly discovered groups
-- Added module-level docstring describing the startup blind spot: new groups start with consecutive_static=0 and will report as ONLINE for threshold cycles before potentially being detected as OFFLINE
-- Updated `get_group_status` docstring to reference this behavior
-- **Learnings for future iterations:**
-  - This is a known limitation, not a bug - groups with DB history are loaded correctly at startup
-  - The fix is documentation-only as specified in the task
----
-
-## 2026-02-22 - TASK 26
-- Modified `verify_kafka_connectivity` to return the verified AdminClient instead of just True
-- Removed duplicate AdminClient creation - now reuses the verified client
-- Changed return type from `bool` to `Any` (AdminClient)
-- Updated call site to use returned client instead of creating a new one
-- **Learnings for future iterations:**
-  - When a function creates a resource that's needed later, return it for reuse rather than creating another instance
-  - Keep using the parameter `kafka_client_module` consistently inside the function (not the module reference)
----
-
-## 2026-02-22 - TASK 27
-- Added `has_group_history` function to check if a group has DB history
-- Added `get_group_tracked_topics` function to retrieve topics a group has consumed
-- Modified `_process_group` to call new `_handle_idle_group` method when no partitions assigned
-- Idle groups with DB history now emit WARNING and are marked as OFFLINE for all tracked topics
-- Idle groups without DB history continue to log DEBUG only
-- Fixed type issue: convert Set to List when calling `get_committed_offsets`
-- **Learnings for future iterations:**
-  - Idle group detection relies on the per-group partition fix from TASK 23 - groups with no active assignments now properly return empty partition sets
-  - Groups with DB history are identified by presence in consumer_commits table
-  - When marking idle groups as OFFLINE, we need to iterate over all previously tracked topics for that group
----
-
-## 2026-02-22 - TASK 28
-- Added `get_last_stored_offset` function to efficiently fetch only the most recent offset
-- Updated `_write_partition_offset_if_needed` in sampler.py to use the new function instead of fetching all interpolation points
-- This replaces an unbounded query that fetched all historical rows just to get the latest offset
-- **Learnings for future iterations:**
-  - When you only need one value from a table, write a purpose-built query rather than fetching all rows and extracting one
-  - Follow the existing pattern in `get_last_write_time` for similar single-value queries
-
----
-
-## 2026-02-22 - TASK 30
-- Modified reporter.py to return "fine" resolution for both ONLINE and RECOVERING states
-- Updated test to reflect new expected behavior (RECOVERING should return "fine")
-- **Learnings for future iterations:**
-  - RECOVERING groups are actively consuming with advancing offsets, so they warrant "fine" resolution just like ONLINE groups
-  - Only OFFLINE status should produce "coarse" resolution
-
----
-
-## 2026-02-22 - TASK 29
-- Added validation in `run_incremental_vacuum` to ensure `pages` is a positive integer
-- Raises `ValueError` if pages is <= 0 or not an integer
-- Added test for validation rejection of invalid values
-- **Learnings for future iterations:**
-  - SQLite PRAGMA statements don't support bound parameters, so validation is the defense against injection
-  - Keep the f-string since it's required for PRAGMA, but validate input first
----
-
-## 2026-02-22 - TASK 31
-- Modified `housekeeping.py` to subtract elapsed cycle time from sleep interval
-- Now follows the same pattern as Sampler: calculates elapsed time after `_run_cycle()` and adjusts sleep accordingly
-- If cycle takes longer than interval, sleep_time becomes 0 and loop continues immediately without waiting
-- **Learnings for future iterations:**
-  - The pattern for handling intervals in worker threads: capture cycle_start, run work, calculate elapsed, subtract from interval, sleep if positive
-  - This prevents back-to-back cycles when housekeeping takes longer than the configured interval
 
