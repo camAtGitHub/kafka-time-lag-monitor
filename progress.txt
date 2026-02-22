@@ -1,0 +1,21 @@
+## Reminder
+
+**Examples of good progress.txt additions:**
+- "When modifying X, also update Y to keep them in sync"
+- "This module uses pattern Z for all API calls"
+- "Tests require the dev server running on PORT 3000"
+- "Field names must match the template exactly"
+
+**Do NOT add:**
+- Story-specific implementation details
+- Temporary debugging notes
+- Information already in progress.txt
+
+---
+## Codebase Patterns
+- put learnings here.
+
+
+---
+## Progress updates
+
