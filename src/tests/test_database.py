@@ -19,6 +19,8 @@ from database import (
     get_all_partition_keys,
     get_all_commit_keys,
     run_incremental_vacuum,
+    has_group_history,
+    get_group_tracked_topics,
 )
 
 
@@ -32,11 +34,11 @@ class TestInitDb:
         )
         tables = [row[0] for row in cursor.fetchall()]
         expected = [
-            'consumer_commits',
-            'excluded_groups',
-            'excluded_topics',
-            'group_status',
-            'partition_offsets'
+            "consumer_commits",
+            "excluded_groups",
+            "excluded_topics",
+            "group_status",
+            "partition_offsets",
         ]
         assert tables == expected
 
@@ -141,7 +143,9 @@ class TestConsumerCommits:
     def test_recent_commits_respects_limit(self, db_conn):
         """Verify the limit parameter is respected."""
         for i in range(10):
-            insert_consumer_commit(db_conn, "group-1", "test-topic", 0, i, 1234567890 + i)
+            insert_consumer_commit(
+                db_conn, "group-1", "test-topic", 0, i, 1234567890 + i
+            )
         commits = get_recent_commits(db_conn, "group-1", "test-topic", 0, 5)
         assert len(commits) == 5
 
@@ -163,8 +167,7 @@ class TestGroupStatus:
     def test_upsert_group_status_insert(self, db_conn):
         """Test inserting a new group status."""
         upsert_group_status(
-            db_conn, "group-1", "test-topic", "ONLINE",
-            1234567890, 1234567890, 0
+            db_conn, "group-1", "test-topic", "ONLINE", 1234567890, 1234567890, 0
         )
         status = get_group_status(db_conn, "group-1", "test-topic")
         assert status is not None
@@ -176,12 +179,10 @@ class TestGroupStatus:
     def test_upsert_group_status_update(self, db_conn):
         """Test updating an existing group status."""
         upsert_group_status(
-            db_conn, "group-1", "test-topic", "ONLINE",
-            1234567890, 1234567890, 0
+            db_conn, "group-1", "test-topic", "ONLINE", 1234567890, 1234567890, 0
         )
         upsert_group_status(
-            db_conn, "group-1", "test-topic", "OFFLINE",
-            1234567900, 1234567890, 3
+            db_conn, "group-1", "test-topic", "OFFLINE", 1234567900, 1234567890, 3
         )
         status = get_group_status(db_conn, "group-1", "test-topic")
         assert status["status"] == "OFFLINE"
@@ -190,7 +191,7 @@ class TestGroupStatus:
         # Verify only one row exists (no duplicates)
         cursor = db_conn.execute(
             "SELECT COUNT(*) FROM group_status WHERE group_id = ? AND topic = ?",
-            ("group-1", "test-topic")
+            ("group-1", "test-topic"),
         )
         assert cursor.fetchone()[0] == 1
 
@@ -202,16 +203,13 @@ class TestGroupStatus:
     def test_load_all_group_statuses(self, db_conn):
         """Test loading all group statuses."""
         upsert_group_status(
-            db_conn, "group-1", "topic-a", "ONLINE",
-            1234567890, 1234567890, 0
+            db_conn, "group-1", "topic-a", "ONLINE", 1234567890, 1234567890, 0
         )
         upsert_group_status(
-            db_conn, "group-1", "topic-b", "OFFLINE",
-            1234567900, 1234567900, 5
+            db_conn, "group-1", "topic-b", "OFFLINE", 1234567900, 1234567900, 5
         )
         upsert_group_status(
-            db_conn, "group-2", "topic-a", "RECOVERING",
-            1234567910, 1234567910, 2
+            db_conn, "group-2", "topic-a", "RECOVERING", 1234567910, 1234567910, 2
         )
         all_statuses = load_all_group_statuses(db_conn)
         assert len(all_statuses) == 3
@@ -235,14 +233,18 @@ class TestExclusions:
 
     def test_is_topic_excluded_database(self, db_conn):
         """Test topic exclusion from database."""
-        db_conn.execute("INSERT INTO excluded_topics (topic) VALUES (?)", ("db-excluded",))
+        db_conn.execute(
+            "INSERT INTO excluded_topics (topic) VALUES (?)", ("db-excluded",)
+        )
         db_conn.commit()
         result = is_topic_excluded(db_conn, "db-excluded", [])
         assert result is True
 
     def test_is_topic_excluded_both(self, db_conn):
         """Test topic excluded in both config and database."""
-        db_conn.execute("INSERT INTO excluded_topics (topic) VALUES (?)", ("db-excluded",))
+        db_conn.execute(
+            "INSERT INTO excluded_topics (topic) VALUES (?)", ("db-excluded",)
+        )
         db_conn.commit()
         result = is_topic_excluded(db_conn, "db-excluded", ["config-excluded"])
         assert result is True
@@ -254,7 +256,9 @@ class TestExclusions:
 
     def test_is_group_excluded_database(self, db_conn):
         """Test group exclusion from database."""
-        db_conn.execute("INSERT INTO excluded_groups (group_id) VALUES (?)", ("db-excluded",))
+        db_conn.execute(
+            "INSERT INTO excluded_groups (group_id) VALUES (?)", ("db-excluded",)
+        )
         db_conn.commit()
         result = is_group_excluded(db_conn, "db-excluded", [])
         assert result is True
@@ -273,7 +277,13 @@ class TestPruning:
         assert len(points) == 5
         # Should have the 5 most recent (timestamps 5-9)
         timestamps = [p[1] for p in points]
-        assert timestamps == [1234567899, 1234567898, 1234567897, 1234567896, 1234567895]
+        assert timestamps == [
+            1234567899,
+            1234567898,
+            1234567897,
+            1234567896,
+            1234567895,
+        ]
 
     def test_prune_partition_offsets_no_deletion_when_under_limit(self, db_conn):
         """Verify no deletion when row count is under limit."""
@@ -287,7 +297,9 @@ class TestPruning:
     def test_prune_consumer_commits_deletes_oldest(self, db_conn):
         """Verify pruning keeps most recent commits."""
         for i in range(10):
-            insert_consumer_commit(db_conn, "group-1", "test-topic", 0, i * 100, 1234567890 + i)
+            insert_consumer_commit(
+                db_conn, "group-1", "test-topic", 0, i * 100, 1234567890 + i
+            )
         deleted = prune_consumer_commits(db_conn, "group-1", "test-topic", 0, 5)
         assert deleted == 5
         commits = get_recent_commits(db_conn, "group-1", "test-topic", 0, 10)
@@ -338,3 +350,31 @@ class TestIncrementalVacuum:
         """Verify incremental vacuum runs without error."""
         # Just verify it doesn't raise an exception
         run_incremental_vacuum(db_conn, pages=10)
+
+
+class TestGroupHistory:
+    """Tests for group history functions."""
+
+    def test_has_group_history_true(self, db_conn):
+        """Test has_group_history returns True when group has commits."""
+        insert_consumer_commit(db_conn, "group-1", "topic1", 0, 100, 1234567890)
+        result = has_group_history(db_conn, "group-1")
+        assert result is True
+
+    def test_has_group_history_false(self, db_conn):
+        """Test has_group_history returns False when group has no history."""
+        result = has_group_history(db_conn, "nonexistent-group")
+        assert result is False
+
+    def test_get_group_tracked_topics(self, db_conn):
+        """Test get_group_tracked_topics returns all topics for a group."""
+        insert_consumer_commit(db_conn, "group-1", "topic1", 0, 100, 1234567890)
+        insert_consumer_commit(db_conn, "group-1", "topic2", 0, 200, 1234567890)
+        insert_consumer_commit(db_conn, "group-2", "topic1", 0, 300, 1234567890)
+        topics = get_group_tracked_topics(db_conn, "group-1")
+        assert set(topics) == {"topic1", "topic2"}
+
+    def test_get_group_tracked_topics_empty(self, db_conn):
+        """Test get_group_tracked_topics returns empty list for unknown group."""
+        topics = get_group_tracked_topics(db_conn, "nonexistent-group")
+        assert topics == []

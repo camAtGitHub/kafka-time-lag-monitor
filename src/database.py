@@ -446,3 +446,37 @@ def run_incremental_vacuum(conn: sqlite3.Connection, pages: int = 100) -> None:
         pages: Number of pages to vacuum
     """
     conn.execute(f"PRAGMA incremental_vacuum({pages})")
+
+
+def get_group_tracked_topics(conn: sqlite3.Connection, group_id: str) -> List[str]:
+    """Get all topics that have been tracked for a group.
+
+    Args:
+        conn: Database connection
+        group_id: Consumer group ID
+
+    Returns:
+        List of topic names that have history for this group
+    """
+    cursor = conn.execute(
+        "SELECT DISTINCT topic FROM consumer_commits WHERE group_id = ?",
+        (group_id,),
+    )
+    return [row[0] for row in cursor.fetchall()]
+
+
+def has_group_history(conn: sqlite3.Connection, group_id: str) -> bool:
+    """Check if history in the database a group has any.
+
+    Args:
+        conn: Database connection
+        group_id: Consumer group ID
+
+    Returns:
+        True if the group has any history (commits or status)
+    """
+    cursor = conn.execute(
+        "SELECT 1 FROM consumer_commits WHERE group_id = ? LIMIT 1",
+        (group_id,),
+    )
+    return cursor.fetchone() is not None

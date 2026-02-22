@@ -24,18 +24,19 @@ class Sampler:
     """
 
     def __init__(
-        self, config: Config, db_conn: Any, kafka_client: Any, state_manager: Any
+        self, config: Config, db_path: str, kafka_client: Any, state_manager: Any
     ) -> None:
         """Initialize the sampler.
 
         Args:
             config: Configuration object
-            db_conn: SQLite database connection
+            db_path: Path to the SQLite database file
             kafka_client: Kafka AdminClient instance
             state_manager: StateManager instance for group status
         """
         self._config = config
-        self._db_conn = db_conn
+        self._db_path = db_path
+        self._db_conn = database.get_connection(db_path)
         self._kafka_client = kafka_client
         self._state_manager = state_manager
 
@@ -137,12 +138,12 @@ class Sampler:
         group_partitions = group_topic_partitions.get(group_id, set())
 
         if not group_partitions:
-            logger.debug(f"No partitions assigned to group {group_id}")
+            self._handle_idle_group(group_id, cycle_start)
             return
 
         # Fetch committed offsets for this group
         committed_offsets = get_committed_offsets(
-            self._kafka_client, group_id, group_partitions
+            self._kafka_client, group_id, list(group_partitions)
         )
 
         if not committed_offsets:
@@ -387,3 +388,31 @@ class Sampler:
             max_lag = max(max_lag, lag_seconds)
 
         return max_lag
+
+    def _handle_idle_group(self, group_id: str, cycle_start: float) -> None:
+        """Handle a group with no active partitions.
+
+        Args:
+            group_id: The consumer group ID
+            cycle_start: Timestamp when the cycle started
+        """
+        has_history = database.has_group_history(self._db_conn, group_id)
+
+        if has_history:
+            tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
+            logger.warning(
+                f"Group {group_id} has no active partitions but has DB history "
+                f"for topics: {tracked_topics}. Marking as OFFLINE."
+            )
+            current_time = int(cycle_start)
+            for topic in tracked_topics:
+                self._state_manager.set_group_status(
+                    group_id,
+                    topic,
+                    "OFFLINE",
+                    current_time,
+                    current_time,
+                    self._config.monitoring.offline_detection_consecutive_samples,
+                )
+        else:
+            logger.debug(f"No partitions assigned to group {group_id}")

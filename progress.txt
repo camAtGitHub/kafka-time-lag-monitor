@@ -19,6 +19,7 @@
 - SQLite PRAGMA `auto_vacuum=INCREMENTAL` must be set BEFORE creating tables and requires a `commit()` to take effect
 - Each worker thread (Sampler, Reporter, Housekeeping, StateManager) should receive `db_path` string and create its own connection via `database.get_connection(db_path)` - never share a connection across threads
 - Tests that use StateManager/Reporter/Housekeeping need initialized database; use `db_path_initialized` fixture from conftest.py
+- When calling `get_committed_offsets` from kafka_client, convert Set to List since the function expects List[Tuple[str, int]]
 
 
 ---
@@ -61,4 +62,17 @@
 - **Learnings for future iterations:**
   - When a function creates a resource that's needed later, return it for reuse rather than creating another instance
   - Keep using the parameter `kafka_client_module` consistently inside the function (not the module reference)
+---
+
+## 2026-02-22 - TASK 27
+- Added `has_group_history` function to check if a group has DB history
+- Added `get_group_tracked_topics` function to retrieve topics a group has consumed
+- Modified `_process_group` to call new `_handle_idle_group` method when no partitions assigned
+- Idle groups with DB history now emit WARNING and are marked as OFFLINE for all tracked topics
+- Idle groups without DB history continue to log DEBUG only
+- Fixed type issue: convert Set to List when calling `get_committed_offsets`
+- **Learnings for future iterations:**
+  - Idle group detection relies on the per-group partition fix from TASK 23 - groups with no active assignments now properly return empty partition sets
+  - Groups with DB history are identified by presence in consumer_commits table
+  - When marking idle groups as OFFLINE, we need to iterate over all previously tracked topics for that group
 ---

@@ -106,7 +106,7 @@ def make_test_config():
 class TestSamplerOnlineGroup:
     """Tests for ONLINE group write behavior."""
 
-    def test_online_group_write_issued_when_cadence_elapsed(self, db_conn):
+    def test_online_group_write_issued_when_cadence_elapsed(self, db_path, db_conn):
         """ONLINE group — write is issued when cadence interval has elapsed"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -119,7 +119,7 @@ class TestSamplerOnlineGroup:
             latest_offsets=topic_partitions,
         )
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         shutdown_event = __import__("threading").Event()
 
@@ -134,7 +134,9 @@ class TestSamplerOnlineGroup:
         assert rows[0][1] == 0
         assert rows[0][2] == 100
 
-    def test_online_group_write_skipped_when_cadence_not_elapsed(self, db_conn):
+    def test_online_group_write_skipped_when_cadence_not_elapsed(
+        self, db_path, db_conn
+    ):
         """ONLINE group — write is skipped when cadence interval has not elapsed"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -153,7 +155,7 @@ class TestSamplerOnlineGroup:
             latest_offsets=topic_partitions,
         )
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         s._write_partition_offset_if_needed("topic1", 0, 100, time.time())
 
@@ -165,7 +167,7 @@ class TestSamplerOnlineGroup:
 class TestSamplerOfflineGroup:
     """Tests for OFFLINE group write behavior."""
 
-    def test_offline_group_write_coarse_cadence(self, db_conn):
+    def test_offline_group_write_coarse_cadence(self, db_path, db_conn):
         """OFFLINE group — write uses coarse cadence interval"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -184,7 +186,7 @@ class TestSamplerOfflineGroup:
             latest_offsets=topic_partitions,
         )
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         s._write_partition_offset_if_needed("topic1", 0, 100, time.time())
 
@@ -197,7 +199,9 @@ class TestSamplerConsumerCommits:
     """Tests for consumer_commits write behavior."""
 
     @patch("kafka_client.get_committed_offsets")
-    def test_consumer_commits_always_written(self, mock_get_committed, db_conn):
+    def test_consumer_commits_always_written(
+        self, mock_get_committed, db_path, db_conn
+    ):
         """consumer_commits is always written regardless of group status or cadence"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -213,7 +217,7 @@ class TestSamplerConsumerCommits:
             "group1": set(topic_partitions.keys())
         }
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         current_time = int(time.time())
         s._process_group(
@@ -237,7 +241,7 @@ class TestSamplerConsumerCommits:
 class TestSamplerStateMachine:
     """Tests for state machine transitions."""
 
-    def test_online_to_offline_transition(self, db_conn):
+    def test_online_to_offline_transition(self, db_path, db_conn):
         """State machine ONLINE→OFFLINE transition - requires static offsets AND lag"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -259,7 +263,7 @@ class TestSamplerStateMachine:
 
         kafka_client = MockKafkaClient()
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         committed_offsets = {("topic1", 0): 100}
         latest_offsets = {("topic1", 0): 200}
@@ -273,7 +277,7 @@ class TestSamplerStateMachine:
         assert status["status"] == "OFFLINE"
         assert status["consecutive_static"] >= threshold
 
-    def test_offline_to_recovering_transition(self, db_conn):
+    def test_offline_to_recovering_transition(self, db_path, db_conn):
         """State machine OFFLINE→RECOVERING"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -301,7 +305,7 @@ class TestSamplerStateMachine:
 
         kafka_client = MockKafkaClient()
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         committed_offsets = {("topic1", 0): 102}
         latest_offsets = {("topic1", 0): 200}
@@ -314,7 +318,7 @@ class TestSamplerStateMachine:
 
         assert status["status"] == "RECOVERING"
 
-    def test_recovering_to_online_transition(self, db_conn):
+    def test_recovering_to_online_transition(self, db_path, db_conn):
         """State machine RECOVERING→ONLINE"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -345,7 +349,7 @@ class TestSamplerStateMachine:
 
         kafka_client = MockKafkaClient()
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         committed_offsets = {("topic1", 0): 99}
         latest_offsets = {("topic1", 0): 100}
@@ -358,7 +362,7 @@ class TestSamplerStateMachine:
 
         assert status["status"] == "ONLINE"
 
-    def test_recovering_to_offline_transition(self, db_conn):
+    def test_recovering_to_offline_transition(self, db_path, db_conn):
         """State machine RECOVERING→OFFLINE - requires static offsets AND lag"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -385,7 +389,7 @@ class TestSamplerStateMachine:
 
         kafka_client = MockKafkaClient()
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         committed_offsets = {("topic1", 0): 100}
         latest_offsets = {("topic1", 0): 200}
@@ -398,7 +402,7 @@ class TestSamplerStateMachine:
 
         assert status["status"] == "OFFLINE"
 
-    def test_static_without_lag_stays_online(self, db_conn):
+    def test_static_without_lag_stays_online(self, db_path, db_conn):
         """Static offsets without lag should NOT transition to OFFLINE (low-flow topic)"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -420,7 +424,7 @@ class TestSamplerStateMachine:
 
         kafka_client = MockKafkaClient()
 
-        s = Sampler(config, db_conn, kafka_client, state_manager)
+        s = Sampler(config, db_path, kafka_client, state_manager)
 
         committed_offsets = {("topic1", 0): 100}
         latest_offsets = {("topic1", 0): 100}
@@ -437,7 +441,7 @@ class TestSamplerStateMachine:
 class TestSamplerErrorHandling:
     """Tests for error handling in sampler."""
 
-    def test_database_write_error_handled_gracefully(self, db_conn, caplog):
+    def test_database_write_error_handled_gracefully(self, db_path, db_conn, caplog):
         """Test that database write errors are caught and logged, not raised."""
         import logging
         import threading
@@ -460,7 +464,7 @@ class TestSamplerErrorHandling:
             "sampler.database.insert_consumer_commit",
             side_effect=sqlite3.OperationalError("database is locked"),
         ):
-            s = Sampler(config, db_conn, mock_kafka, state_manager)
+            s = Sampler(config, db_path, mock_kafka, state_manager)
 
             shutdown_event = threading.Event()
             shutdown_event.set()
@@ -471,7 +475,7 @@ class TestSamplerErrorHandling:
 class TestSamplerRunLoop:
     """Tests for sampler run loop."""
 
-    def test_run_respects_shutdown_event(self, db_conn):
+    def test_run_respects_shutdown_event(self, db_path, db_conn):
         """Sampler run loop respects shutdown event"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -479,7 +483,7 @@ class TestSamplerRunLoop:
         mock_kafka = MagicMock()
         mock_kafka.get_active_consumer_groups.return_value = []
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         shutdown_event = __import__("threading").Event()
         shutdown_event.set()
@@ -490,7 +494,7 @@ class TestSamplerRunLoop:
 
         assert elapsed < 1
 
-    def test_kafka_failure_does_not_crash(self, db_conn):
+    def test_kafka_failure_does_not_crash(self, db_path, db_conn):
         """Kafka call failure (mock returns empty) — sampler cycle completes without exception"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -498,7 +502,7 @@ class TestSamplerRunLoop:
         mock_kafka = MagicMock()
         mock_kafka.get_active_consumer_groups.side_effect = Exception("Kafka error")
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         shutdown_event = __import__("threading").Event()
         shutdown_event.set()  # Set to avoid timeout
@@ -507,7 +511,7 @@ class TestSamplerRunLoop:
 
         assert True
 
-    def test_thread_last_run_updated(self, db_conn):
+    def test_thread_last_run_updated(self, db_path, db_conn):
         """Sampler updates thread_last_run timestamp"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -515,7 +519,7 @@ class TestSamplerRunLoop:
         mock_kafka = MagicMock()
         mock_kafka.get_active_consumer_groups.return_value = []  # Empty groups - short cycle
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         # Use threading to set shutdown after a short delay
         import threading
@@ -541,7 +545,7 @@ class TestSamplerRunLoop:
 class TestSamplerGetPartitions:
     """Tests for _get_partitions_for_topic method."""
 
-    def test_get_partitions_from_commits(self, db_conn):
+    def test_get_partitions_from_commits(self, db_path, db_conn):
         """_get_partitions_for_topic returns partitions from consumer_commits"""
         config = make_test_config()
         state_manager = MockStateManager()
@@ -565,7 +569,7 @@ class TestSamplerGetPartitions:
 
         mock_kafka = MagicMock()
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         partitions = s._get_partitions_for_topic("group1", "topic1")
 
@@ -577,7 +581,7 @@ class TestSamplerPerGroupPartitions:
 
     @patch("kafka_client.get_committed_offsets")
     def test_process_group_uses_only_its_own_partitions(
-        self, mock_get_committed_offsets, db_conn
+        self, mock_get_committed_offsets, db_path, db_conn
     ):
         """Each group should only query its own partitions, not all partitions."""
         config = make_test_config()
@@ -597,7 +601,7 @@ class TestSamplerPerGroupPartitions:
         }
         mock_get_committed_offsets.return_value = {("topic1", 0): 50, ("topic1", 1): 60}
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         s._process_group(
             "group1",
@@ -612,7 +616,7 @@ class TestSamplerPerGroupPartitions:
 
         assert set(partitions_arg) == {("topic1", 0), ("topic1", 1)}
 
-    def test_group_with_no_partitions_logs_debug(self, db_conn, caplog):
+    def test_group_with_no_partitions_logs_debug(self, db_path, db_conn, caplog):
         """Group with no assigned partitions should log debug and return early."""
         import logging
 
@@ -623,7 +627,7 @@ class TestSamplerPerGroupPartitions:
 
         mock_kafka = MagicMock()
 
-        s = Sampler(config, db_conn, mock_kafka, state_manager)
+        s = Sampler(config, db_path, mock_kafka, state_manager)
 
         s._process_group(
             "empty_group",
@@ -633,3 +637,91 @@ class TestSamplerPerGroupPartitions:
         )
 
         assert "No partitions assigned to group empty_group" in caplog.text
+
+
+class TestSamplerIdleGroup:
+    """Tests for idle/ghost group handling."""
+
+    def test_idle_group_with_db_history_logs_warning(self, db_path_initialized, caplog):
+        """Idle group with DB history should log WARNING."""
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        config = make_test_config()
+        state_manager = MockStateManager()
+
+        db_conn = database.init_db(db_path_initialized)
+        db_conn.execute(
+            """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("idle_group", "topic1", 0, 100, 1000),
+        )
+        db_conn.commit()
+        db_conn.close()
+
+        mock_kafka = MagicMock()
+
+        s = Sampler(config, db_path_initialized, mock_kafka, state_manager)
+
+        current_time = time.time()
+        s._handle_idle_group("idle_group", current_time)
+
+        assert "idle_group has no active partitions but has DB history" in caplog.text
+
+    def test_idle_group_with_db_history_marks_offline(
+        self, db_path_initialized, caplog
+    ):
+        """Idle group with DB history should be marked as OFFLINE."""
+        import logging
+
+        caplog.set_level(logging.WARNING)
+
+        config = make_test_config()
+        state_manager = MockStateManager()
+
+        db_conn = database.init_db(db_path_initialized)
+        db_conn.execute(
+            """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("idle_group", "topic1", 0, 100, 1000),
+        )
+        db_conn.execute(
+            """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            ("idle_group", "topic2", 0, 200, 1000),
+        )
+        db_conn.commit()
+        db_conn.close()
+
+        mock_kafka = MagicMock()
+
+        s = Sampler(config, db_path_initialized, mock_kafka, state_manager)
+
+        current_time = time.time()
+        s._handle_idle_group("idle_group", current_time)
+
+        status1 = state_manager.get_group_status("idle_group", "topic1")
+        status2 = state_manager.get_group_status("idle_group", "topic2")
+
+        assert status1["status"] == "OFFLINE"
+        assert status2["status"] == "OFFLINE"
+
+    def test_idle_group_without_db_history_logs_debug(
+        self, db_path_initialized, caplog
+    ):
+        """Idle group without DB history should log DEBUG."""
+        import logging
+
+        caplog.set_level(logging.DEBUG)
+
+        config = make_test_config()
+        state_manager = MockStateManager()
+
+        mock_kafka = MagicMock()
+
+        s = Sampler(config, db_path_initialized, mock_kafka, state_manager)
+
+        s._handle_idle_group("new_group", time.time())
+
+        assert "No partitions assigned to group new_group" in caplog.text
