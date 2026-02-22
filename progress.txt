@@ -85,3 +85,13 @@
   - When you only need one value from a table, write a purpose-built query rather than fetching all rows and extracting one
   - Follow the existing pattern in `get_last_write_time` for similar single-value queries
 
+---
+
+## 2026-02-22 - TASK 29
+- Added validation in `run_incremental_vacuum` to ensure `pages` is a positive integer
+- Raises `ValueError` if pages is <= 0 or not an integer
+- Added test for validation rejection of invalid values
+- **Learnings for future iterations:**
+  - SQLite PRAGMA statements don't support bound parameters, so validation is the defense against injection
+  - Keep the f-string since it's required for PRAGMA, but validate input first
+

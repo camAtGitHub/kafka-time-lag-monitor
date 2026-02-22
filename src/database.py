@@ -467,7 +467,12 @@ def run_incremental_vacuum(conn: sqlite3.Connection, pages: int = 100) -> None:
     Args:
         conn: Database connection
         pages: Number of pages to vacuum
+
+    Raises:
+        ValueError: If pages is not a positive integer
     """
+    if not isinstance(pages, int) or pages <= 0:
+        raise ValueError(f"pages must be a positive integer, got {pages!r}")
     conn.execute(f"PRAGMA incremental_vacuum({pages})")
 
 

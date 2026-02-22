@@ -361,8 +361,18 @@ class TestIncrementalVacuum:
 
     def test_run_incremental_vacuum_completes(self, db_conn):
         """Verify incremental vacuum runs without error."""
-        # Just verify it doesn't raise an exception
         run_incremental_vacuum(db_conn, pages=10)
+
+    def test_run_incremental_vacuum_invalid_pages_raises(self, db_conn):
+        """Verify validation rejects invalid pages values."""
+        with pytest.raises(ValueError, match="pages must be a positive integer"):
+            run_incremental_vacuum(db_conn, pages=0)
+
+        with pytest.raises(ValueError, match="pages must be a positive integer"):
+            run_incremental_vacuum(db_conn, pages=-1)
+
+        with pytest.raises(ValueError, match="pages must be a positive integer"):
+            run_incremental_vacuum(db_conn, pages="100")  # type: ignore
 
 
 class TestGroupHistory:
