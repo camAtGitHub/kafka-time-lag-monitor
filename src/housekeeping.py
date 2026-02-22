@@ -45,12 +45,14 @@ class Housekeeping:
                 cycle_start = time.time()
                 self._run_cycle()
 
-                # Sleep for the configured interval
-                sleep_time = self._config.monitoring.housekeeping_interval_seconds
-
-                # Check shutdown_event during sleep
-                if shutdown_event.wait(timeout=sleep_time):
-                    break
+                # Sleep for remainder of housekeeping interval
+                elapsed = time.time() - cycle_start
+                sleep_time = (
+                    self._config.monitoring.housekeeping_interval_seconds - elapsed
+                )
+                if sleep_time > 0:
+                    # Check shutdown_event during sleep
+                    shutdown_event.wait(timeout=sleep_time)
 
             except Exception as e:
                 logger.exception(f"Error in housekeeping cycle: {e}")

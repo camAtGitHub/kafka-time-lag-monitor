@@ -103,4 +103,13 @@
 - **Learnings for future iterations:**
   - SQLite PRAGMA statements don't support bound parameters, so validation is the defense against injection
   - Keep the f-string since it's required for PRAGMA, but validate input first
+---
+
+## 2026-02-22 - TASK 31
+- Modified `housekeeping.py` to subtract elapsed cycle time from sleep interval
+- Now follows the same pattern as Sampler: calculates elapsed time after `_run_cycle()` and adjusts sleep accordingly
+- If cycle takes longer than interval, sleep_time becomes 0 and loop continues immediately without waiting
+- **Learnings for future iterations:**
+  - The pattern for handling intervals in worker threads: capture cycle_start, run work, calculate elapsed, subtract from interval, sleep if positive
+  - This prevents back-to-back cycles when housekeeping takes longer than the configured interval
 
