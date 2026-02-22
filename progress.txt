@@ -16,6 +16,9 @@
 - Kafka client functions in `kafka_client.py` catch all exceptions internally, log warnings, return empty/zero values — never raise
 - Module imports inside functions (e.g., `from kafka_client import get_committed_offsets` inside `_process_group`) require patching at the source module, not the calling module
 - Use `uv pip` instead of `pip`, `uv run python` instead of `python`
+- SQLite PRAGMA `auto_vacuum=INCREMENTAL` must be set BEFORE creating tables and requires a `commit()` to take effect
+- Each worker thread (Sampler, Reporter, Housekeeping, StateManager) should receive `db_path` string and create its own connection via `database.get_connection(db_path)` - never share a connection across threads
+- Tests that use StateManager/Reporter/Housekeeping need initialized database; use `db_path_initialized` fixture from conftest.py
 
 
 ---
@@ -28,4 +31,15 @@
 - **Learnings for future iterations:**
   - When patching function imports inside methods, patch at the source module (`kafka_client.get_committed_offsets`) not the calling module
   - The `describe_consumer_groups` call already provides per-group partition data — don't discard it
+---
+
+## 2026-02-22 - TASK 24
+- Verified that SQLite connection is already properly separated per thread - each worker receives `db_path` and creates its own connection via `database.get_connection(db_path)`
+- Fixed test fixtures to use `db_path` instead of passing connections directly
+- Fixed `database.py` to properly set `PRAGMA auto_vacuum=INCREMENTAL` before table creation with commit
+- Added `db_path_initialized` fixture in conftest.py for tests needing initialized database
+- **Learnings for future iterations:**
+  - SQLite PRAGMA auto_vacuum must be set BEFORE creating tables and requires explicit commit
+  - Tests that create workers (StateManager, Reporter, Housekeeping) need initialized database - use `db_path_initialized` fixture
+  - The existing design already implements proper per-thread connections as recommended in the task
 ---

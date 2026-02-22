@@ -19,14 +19,6 @@ from reporter import Reporter
 
 
 @pytest.fixture
-def db_conn():
-    """Create an in-memory database for testing."""
-    conn = database.init_db(":memory:")
-    yield conn
-    conn.close()
-
-
-@pytest.fixture
 def mock_config(tmp_path):
     """Create a mock config with temp output path."""
     config = Mock()
@@ -52,26 +44,26 @@ class TestReporterCycle:
     """Tests for the reporter cycle functionality."""
 
     def test_reporter_generates_correct_lag_values(
-        self, db_conn, mock_config, mock_state_manager, tmp_path
+        self, db_path_initialized, mock_config, mock_state_manager, tmp_path
     ):
         """Test that reporter calculates lag values correctly."""
         now = int(time.time())
 
-        # Insert interpolation points for partition 0
-        database.insert_partition_offset(db_conn, "test-topic", 0, 100, now - 100)
-        database.insert_partition_offset(db_conn, "test-topic", 0, 200, now - 50)
-        database.insert_partition_offset(db_conn, "test-topic", 0, 300, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "test-topic", 0, 100, now - 100)
+            database.insert_partition_offset(conn, "test-topic", 0, 200, now - 50)
+            database.insert_partition_offset(conn, "test-topic", 0, 300, now)
 
-        # Insert consumer commit at offset 150 (should interpolate to ~now-75)
-        database.insert_consumer_commit(
-            db_conn, "test-group", "test-topic", 0, 150, now
-        )
+            database.insert_consumer_commit(
+                conn, "test-group", "test-topic", 0, 150, now
+            )
+        finally:
+            conn.close()
 
-        # Create reporter and run cycle
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
-        # Load and verify output
         with open(mock_config.output.json_path, "r") as f:
             output = json.load(f)
 
@@ -82,30 +74,31 @@ class TestReporterCycle:
         consumer = output["consumers"][0]
         assert consumer["group_id"] == "test-group"
         assert consumer["topic"] == "test-topic"
-        # Lag should be approximately 75 seconds (interpolated)
         assert 70 <= consumer["lag_seconds"] <= 80
         assert consumer["worst_partition"] == 0
 
     def test_output_has_required_fields_and_types(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that output JSON has all required fields with correct types."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now - 60)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now - 60)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
             output = json.load(f)
 
-        # Check top-level fields
         assert isinstance(output["generated_at"], int)
         assert isinstance(output["consumers"], list)
 
-        # Check consumer fields
         consumer = output["consumers"][0]
         assert isinstance(consumer["group_id"], str)
         assert isinstance(consumer["topic"], str)
@@ -120,15 +113,19 @@ class TestReporterCycle:
         assert isinstance(consumer["calculated_at"], int)
 
     def test_lag_seconds_is_zero_for_current_consumer(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that lag_seconds is 0 when consumer is at current offset."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 100, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 100, now)
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -137,15 +134,19 @@ class TestReporterCycle:
         assert output["consumers"][0]["lag_seconds"] == 0
 
     def test_worst_partition_is_null_when_lag_is_zero(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that worst_partition is null when lag is 0."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 100, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 100, now)
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -153,14 +154,20 @@ class TestReporterCycle:
 
         assert output["consumers"][0]["worst_partition"] is None
 
-    def test_status_is_lowercase_string(self, db_conn, mock_config, mock_state_manager):
+    def test_status_is_lowercase_string(
+        self, db_path_initialized, mock_config, mock_state_manager
+    ):
         """Test that status values are lowercase strings."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -176,44 +183,48 @@ class TestReporterAtomicWrite:
     """Tests for atomic write behavior."""
 
     def test_atomic_write_uses_temp_file(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that reporter uses temp file for atomic writes."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
-        # Temp file should not exist after successful write
         tmp_path = f"{mock_config.output.json_path}.tmp"
         assert not os.path.exists(tmp_path)
 
-        # Final file should exist and be valid JSON
         assert os.path.exists(mock_config.output.json_path)
         with open(mock_config.output.json_path, "r") as f:
             output = json.load(f)
         assert "consumers" in output
 
     def test_output_is_always_valid_json(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that output file is always valid JSON."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
-        # Verify file can be parsed
         with open(mock_config.output.json_path, "r") as f:
             content = f.read()
 
-        # Should be valid JSON
         output = json.loads(content)
         assert isinstance(output, dict)
 
@@ -222,7 +233,7 @@ class TestReporterErrorHandling:
     """Tests for reporter error handling."""
 
     def test_json_write_error_does_not_crash_reporter(
-        self, db_conn, mock_config, mock_state_manager, tmp_path
+        self, db_path_initialized, mock_config, mock_state_manager, tmp_path
     ):
         """Test that JSON write errors don't crash the reporter thread."""
         import logging
@@ -231,12 +242,16 @@ class TestReporterErrorHandling:
         import logging.handlers
 
         now = int(time.time())
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
         mock_config.output.json_path = str(tmp_path / "nonexistent" / "output.json")
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
 
         shutdown_event = threading.Event()
         shutdown_event.set()
@@ -244,15 +259,19 @@ class TestReporterErrorHandling:
         reporter.run(shutdown_event)
 
     def test_json_write_permission_error_does_not_crash_reporter(
-        self, db_conn, mock_config, mock_state_manager, tmp_path
+        self, db_path_initialized, mock_config, mock_state_manager, tmp_path
     ):
         """Test that JSON permission errors don't crash the reporter thread."""
         import stat
         import time
 
         now = int(time.time())
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
         json_path = tmp_path / "output.json"
         json_path.touch()
@@ -260,7 +279,7 @@ class TestReporterErrorHandling:
 
         mock_config.output.json_path = str(json_path)
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
 
         shutdown_event = threading.Event()
         shutdown_event.set()
@@ -268,20 +287,21 @@ class TestReporterErrorHandling:
         reporter.run(shutdown_event)
 
     def test_calculation_error_does_not_prevent_other_groups(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that error for one group doesn't block others."""
         now = int(time.time())
 
-        # Insert data for group1
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
 
-        # Insert data for group2
-        database.insert_partition_offset(db_conn, "topic2", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group2", "topic2", 0, 50, now)
+            database.insert_partition_offset(conn, "topic2", 0, 100, now)
+            database.insert_consumer_commit(conn, "group2", "topic2", 0, 50, now)
+        finally:
+            conn.close()
 
-        # Make state_manager raise error for group1
         call_count = [0]
 
         def side_effect(group_id, topic):
@@ -297,10 +317,9 @@ class TestReporterErrorHandling:
 
         mock_state_manager.get_group_status.side_effect = side_effect
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
-        # Should still have output with group2
         with open(mock_config.output.json_path, "r") as f:
             output = json.load(f)
 
@@ -312,13 +331,17 @@ class TestReporterDataResolution:
     """Tests for data_resolution field."""
 
     def test_fine_resolution_for_online_status(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that ONLINE status produces fine resolution."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
         mock_state_manager.get_group_status.return_value = {
             "status": "ONLINE",
@@ -327,7 +350,7 @@ class TestReporterDataResolution:
             "consecutive_static": 0,
         }
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -336,13 +359,17 @@ class TestReporterDataResolution:
         assert output["consumers"][0]["data_resolution"] == "fine"
 
     def test_coarse_resolution_for_offline_status(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that OFFLINE status produces coarse resolution."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
         mock_state_manager.get_group_status.return_value = {
             "status": "OFFLINE",
@@ -351,7 +378,7 @@ class TestReporterDataResolution:
             "consecutive_static": 5,
         }
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -360,13 +387,17 @@ class TestReporterDataResolution:
         assert output["consumers"][0]["data_resolution"] == "coarse"
 
     def test_coarse_resolution_for_recovering_status(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that RECOVERING status produces coarse resolution."""
         now = int(time.time())
 
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
         mock_state_manager.get_group_status.return_value = {
             "status": "RECOVERING",
@@ -375,7 +406,7 @@ class TestReporterDataResolution:
             "consecutive_static": 0,
         }
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -388,27 +419,25 @@ class TestReporterMultiplePartitions:
     """Tests for multi-partition scenarios."""
 
     def test_multiple_partitions_reported_correctly(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that multiple partitions are aggregated correctly."""
         now = int(time.time())
 
-        # Insert data for 3 partitions with different lags
-        # Partition 0: committed at 100, latest produced at now (0 lag)
-        # Partition 1: committed at 90, latest produced at now-20
-        # Partition 2: committed at 80, latest produced at now-40
-        for partition in range(3):
-            # Each partition has a different "latest" produced offset
-            latest_offset = 100 - (partition * 10)
-            database.insert_partition_offset(
-                db_conn, "topic1", partition, latest_offset, now - (partition * 10)
-            )
-            # Consumer is at the same offset as production - no lag
-            database.insert_consumer_commit(
-                db_conn, "group1", "topic1", partition, latest_offset, now
-            )
+        conn = database.get_connection(db_path_initialized)
+        try:
+            for partition in range(3):
+                latest_offset = 100 - (partition * 10)
+                database.insert_partition_offset(
+                    conn, "topic1", partition, latest_offset, now - (partition * 10)
+                )
+                database.insert_consumer_commit(
+                    conn, "group1", "topic1", partition, latest_offset, now
+                )
+        finally:
+            conn.close()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter._run_cycle()
 
         with open(mock_config.output.json_path, "r") as f:
@@ -416,7 +445,6 @@ class TestReporterMultiplePartitions:
 
         consumer = output["consumers"][0]
         assert consumer["partitions_monitored"] == 3
-        # All lags are 0 since consumer matches latest produced
         assert consumer["worst_partition"] is None
 
 
@@ -424,39 +452,40 @@ class TestReporterRunLoop:
     """Tests for the reporter run loop."""
 
     def test_run_respects_shutdown_event(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that run() exits when shutdown_event is set."""
         shutdown_event = threading.Event()
-        shutdown_event.set()  # Set immediately
+        shutdown_event.set()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter.run(shutdown_event)
 
-        # Should exit cleanly without writing any output
         assert not os.path.exists(mock_config.output.json_path)
 
     def test_run_updates_thread_last_run(
-        self, db_conn, mock_config, mock_state_manager
+        self, db_path_initialized, mock_config, mock_state_manager
     ):
         """Test that run() updates thread_last_run timestamp."""
         shutdown_event = threading.Event()
 
         now = int(time.time())
-        database.insert_partition_offset(db_conn, "topic1", 0, 100, now)
-        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, 50, now)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 100, now)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+        finally:
+            conn.close()
 
-        # Set shutdown after first cycle
         def set_shutdown_after_delay():
             time.sleep(0.5)
             shutdown_event.set()
 
         threading.Thread(target=set_shutdown_after_delay, daemon=True).start()
 
-        reporter = Reporter(mock_config, db_conn, mock_state_manager)
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
         reporter.run(shutdown_event)
 
-        # Verify thread_last_run was updated
         mock_state_manager.update_thread_last_run.assert_called_with(
             "reporter", pytest.approx(int(time.time()), abs=5)
         )
