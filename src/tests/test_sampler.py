@@ -125,7 +125,11 @@ class TestSamplerOnlineGroup:
 
         s._write_partition_offset_if_needed("topic1", 0, 100, time.time())
 
-        rows = db_conn.execute(
+        import database
+
+        database.commit_batch(s._db_conn)
+
+        rows = s._db_conn.execute(
             "SELECT topic, partition, offset FROM partition_offsets"
         ).fetchall()
 
@@ -190,7 +194,13 @@ class TestSamplerOfflineGroup:
 
         s._write_partition_offset_if_needed("topic1", 0, 100, time.time())
 
-        rows = db_conn.execute("SELECT COUNT(*) FROM partition_offsets").fetchone()[0]
+        import database
+
+        database.commit_batch(s._db_conn)
+
+        rows = s._db_conn.execute("SELECT COUNT(*) FROM partition_offsets").fetchone()[
+            0
+        ]
 
         assert rows == 2
 
@@ -227,7 +237,11 @@ class TestSamplerConsumerCommits:
             current_time,
         )
 
-        rows = db_conn.execute(
+        import database
+
+        database.commit_batch(s._db_conn)
+
+        rows = s._db_conn.execute(
             "SELECT group_id, topic, partition, committed_offset FROM consumer_commits"
         ).fetchall()
 

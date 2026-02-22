@@ -67,3 +67,14 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
   - Added get_all_groups_with_history() function to database.py for finding idle groups with history
   - The state machine is conservative: requires positive evidence of advancement, not absence of evidence of stasis
 ---
+
+## 2026-02-22 19:30 - TASK 35 - Batch commits in sampler write path
+- Removed conn.commit() from insert_partition_offset and insert_consumer_commit in database.py
+- Added commit_batch() function to database.py for explicit batch commits
+- Added commit_batch() call at end of sampler cycle in sampler.py
+- Updated tests in test_sampler.py, test_housekeeping.py, test_reporter.py to call commit_batch after inserts
+- Files changed: src/database.py, src/sampler.py, src/tests/test_sampler.py, src/tests/test_housekeeping.py, src/tests/test_reporter.py
+- **Learnings for future iterations:**
+  - When removing auto-commit from insert functions, all callers (tests and code) need to explicitly call commit_batch
+  - Tests using worker threads need to use the worker's connection (e.g., s._db_conn) not the fixture connection for queries after operations
+  - WAL mode should allow visibility across connections, but explicit commit is still needed for durability

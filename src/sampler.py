@@ -122,6 +122,9 @@ class Sampler:
                             cycle_start,
                         )
 
+                    # Batch commit all writes at end of cycle
+                    database.commit_batch(self._db_conn)
+
                 # Update thread last run timestamp
                 self._state_manager.update_thread_last_run("sampler", int(cycle_start))
 

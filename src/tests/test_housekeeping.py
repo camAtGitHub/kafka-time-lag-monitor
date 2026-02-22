@@ -44,6 +44,8 @@ class TestHousekeepingPruning:
                 db_conn, topic, partition, i, now - (500 - i)
             )
 
+        database.commit_batch(db_conn)
+
         # Verify we have 500 rows
         cursor = db_conn.execute(
             "SELECT COUNT(*) FROM partition_offsets WHERE topic = ? AND partition = ?",
@@ -76,6 +78,8 @@ class TestHousekeepingPruning:
             database.insert_partition_offset(
                 db_conn, topic, partition, i, now - (500 - i)
             )
+
+        database.commit_batch(db_conn)
 
         # Run housekeeping
         hk = Housekeeping(mock_config, db_path_initialized)
@@ -111,6 +115,7 @@ class TestHousekeepingPruning:
                 database.insert_partition_offset(
                     conn, topic, partition, i, now - (100 - i)
                 )
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -140,6 +145,8 @@ class TestHousekeepingPruning:
         # Insert 50 rows for topic2/partition0
         for i in range(50):
             database.insert_partition_offset(db_conn, "topic2", 0, i, now - (50 - i))
+
+        database.commit_batch(db_conn)
 
         # Run housekeeping
         hk = Housekeeping(mock_config, db_path_initialized)
@@ -177,6 +184,8 @@ class TestHousekeepingConsumerCommits:
                 db_conn, group_id, topic, partition, i, now - (500 - i)
             )
 
+        database.commit_batch(db_conn)
+
         # Run housekeeping
         hk = Housekeeping(mock_config, db_path_initialized)
         hk._run_cycle()
@@ -203,6 +212,8 @@ class TestHousekeepingConsumerCommits:
             database.insert_consumer_commit(
                 db_conn, group_id, topic, partition, i, now - (500 - i)
             )
+
+        database.commit_batch(db_conn)
 
         # Run housekeeping
         hk = Housekeeping(mock_config, db_path_initialized)
@@ -234,6 +245,7 @@ class TestHousekeepingConsumerCommits:
                 database.insert_consumer_commit(
                     conn, group_id, topic, partition, i, now - (50 - i)
                 )
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -263,6 +275,8 @@ class TestHousekeepingVacuum:
         for i in range(10):
             database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
 
+        database.commit_batch(db_conn)
+
         # Run vacuum
         database.run_incremental_vacuum(db_conn, pages=100)
 
@@ -282,6 +296,8 @@ class TestHousekeepingCycle:
         for i in range(10):
             database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
             database.insert_consumer_commit(db_conn, "group1", "topic1", 0, i, now - i)
+
+        database.commit_batch(db_conn)
 
         hk = Housekeeping(mock_config, db_path_initialized)
 

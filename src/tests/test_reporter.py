@@ -58,6 +58,7 @@ class TestReporterCycle:
             database.insert_consumer_commit(
                 conn, "test-group", "test-topic", 0, 150, now
             )
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -87,6 +88,7 @@ class TestReporterCycle:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now - 60)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -122,6 +124,7 @@ class TestReporterCycle:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 100, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -143,6 +146,7 @@ class TestReporterCycle:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 100, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -164,6 +168,7 @@ class TestReporterCycle:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -299,6 +304,7 @@ class TestReporterErrorHandling:
 
             database.insert_partition_offset(conn, "topic2", 0, 100, now)
             database.insert_consumer_commit(conn, "group2", "topic2", 0, 50, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -340,6 +346,7 @@ class TestReporterDataResolution:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -368,6 +375,7 @@ class TestReporterDataResolution:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -396,6 +404,7 @@ class TestReporterDataResolution:
         try:
             database.insert_partition_offset(conn, "topic1", 0, 100, now)
             database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
+            database.commit_batch(conn)
         finally:
             conn.close()
 
@@ -434,6 +443,7 @@ class TestReporterMultiplePartitions:
                 database.insert_consumer_commit(
                     conn, "group1", "topic1", partition, latest_offset, now
                 )
+            database.commit_batch(conn)
         finally:
             conn.close()
 

@@ -120,7 +120,6 @@ def insert_partition_offset(
         "INSERT INTO partition_offsets (topic, partition, offset, sampled_at) VALUES (?, ?, ?, ?)",
         (topic, partition, offset, sampled_at),
     )
-    conn.commit()
 
 
 def insert_consumer_commit(
@@ -147,6 +146,17 @@ def insert_consumer_commit(
            VALUES (?, ?, ?, ?, ?)""",
         (group_id, topic, partition, committed_offset, recorded_at),
     )
+
+
+def commit_batch(conn: sqlite3.Connection) -> None:
+    """Commit all pending writes in a single transaction.
+
+    Call this at the end of a sampler cycle to batch all writes
+    into a single transaction, reducing fsync overhead.
+
+    Args:
+        conn: Database connection
+    """
     conn.commit()
 
 
