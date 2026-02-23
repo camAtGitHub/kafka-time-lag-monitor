@@ -318,3 +318,99 @@ class TestStateManager:
             assert count == 1
         finally:
             conn.close()
+
+
+class TestRemoveGroup:
+    """Tests for StateManager.remove_group() method."""
+
+    def test_remove_group_clears_in_memory_state(self, db_path_initialized):
+        """Test remove_group clears all in-memory state for a group."""
+        config = MockConfig()
+        sm = StateManager(db_path_initialized, config)
+
+        # Add state for group-1 with multiple topics
+        sm.set_group_status("group-1", "topic1", "OFFLINE", 1000, 900, 5)
+        sm.set_group_status("group-1", "topic2", "OFFLINE", 1000, 900, 5)
+        sm.set_group_status("group-2", "topic1", "ONLINE", 1000, 1000, 0)
+
+        # Verify state exists
+        assert sm.get_group_status("group-1", "topic1")["status"] == "OFFLINE"
+        assert sm.get_group_status("group-1", "topic2")["status"] == "OFFLINE"
+        assert sm.get_group_status("group-2", "topic1")["status"] == "ONLINE"
+
+        # Remove group-1
+        sm.remove_group("group-1")
+
+        # group-1 state should be gone (returns default ONLINE)
+        status1 = sm.get_group_status("group-1", "topic1")
+        assert status1["status"] == "ONLINE"  # default
+        assert status1["consecutive_static"] == 0  # default
+
+        status2 = sm.get_group_status("group-1", "topic2")
+        assert status2["status"] == "ONLINE"  # default
+
+        # group-2 should remain unchanged
+        assert sm.get_group_status("group-2", "topic1")["status"] == "ONLINE"
+
+    def test_remove_group_does_not_affect_database(self, db_path_initialized):
+        """Test remove_group only affects in-memory state, not database."""
+        config = MockConfig()
+        sm = StateManager(db_path_initialized, config)
+
+        # Add state and persist to database
+        sm.set_group_status("group-1", "topic1", "OFFLINE", 1000, 900, 5)
+        conn = database.get_connection(db_path_initialized)
+        try:
+            sm.persist_group_statuses(conn)
+            conn.commit()
+        finally:
+            conn.close()
+
+        # Remove from in-memory state
+        sm.remove_group("group-1")
+
+        # Database should still have the data
+        conn = database.get_connection(db_path_initialized)
+        try:
+            db_status = database.get_group_status(conn, "group-1", "topic1")
+            assert db_status is not None
+            assert db_status["status"] == "OFFLINE"
+        finally:
+            conn.close()
+
+    def test_remove_group_prevents_persist(self, db_path_initialized):
+        """Test removed group is not written by persist_group_statuses."""
+        config = MockConfig()
+        sm = StateManager(db_path_initialized, config)
+
+        # Add state for two groups
+        sm.set_group_status("group-1", "topic1", "OFFLINE", 1000, 900, 5)
+        sm.set_group_status("group-2", "topic1", "ONLINE", 1000, 1000, 0)
+
+        # Remove group-1 before persisting
+        sm.remove_group("group-1")
+
+        # Persist to database
+        conn = database.get_connection(db_path_initialized)
+        try:
+            sm.persist_group_statuses(conn)
+            conn.commit()
+
+            # group-1 should not be in database
+            db_status1 = database.get_group_status(conn, "group-1", "topic1")
+            assert db_status1 is None
+
+            # group-2 should be in database
+            db_status2 = database.get_group_status(conn, "group-2", "topic1")
+            assert db_status2 is not None
+            assert db_status2["status"] == "ONLINE"
+        finally:
+            conn.close()
+
+    def test_remove_nonexistent_group_no_error(self, db_path_initialized):
+        """Test removing a nonexistent group doesn't raise an error."""
+        config = MockConfig()
+        sm = StateManager(db_path_initialized, config)
+
+        # Should not raise
+        sm.remove_group("nonexistent-group")

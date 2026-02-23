@@ -12,6 +12,9 @@ monitoring:
   offline_detection_consecutive_samples: 5
   recovering_minimum_duration_seconds: 900
   online_lag_threshold_seconds: 600
+  absent_group_retention_seconds: 604800   # 7 days. Ghost groups (absent from Kafka entirely)
+                                            # are removed from the database after being OFFLINE
+                                            # for this long. Set to 0 to disable retirement.
 
 database:
   path: "/var/lib/kafka-lag-monitor/state.db"

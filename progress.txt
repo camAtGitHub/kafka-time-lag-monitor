@@ -70,3 +70,36 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
 
 ---
 ## Progress updates
+
+## 2026-02-23 - Idle Group Log Storm Fix + Ghost Group Retirement
+- What was implemented:
+  - Fixed log storm issue where `_handle_idle_group` was logging WARNING and writing DB every cycle for already-OFFLINE groups
+  - Added ghost group retirement: groups completely absent from Kafka are automatically removed after a configurable retention period
+  - Added `absent_group_retention_seconds` config field (optional, defaults to 604800 = 7 days)
+  - Added `delete_group_data()` function to database.py for removing group data
+  - Added `remove_group()` method to StateManager for clearing in-memory state
+  - Rewrote `_handle_idle_group()` to check current status before acting (transition-only, no repeat writes)
+  - Added `_retire_ghost_groups()` method to Sampler for automatic cleanup
+
+- Files changed:
+  - src/config.py (added config field and loading)
+  - src/database.py (added delete_group_data function)
+  - src/state_manager.py (added remove_group method)
+  - src/sampler.py (rewrote _handle_idle_group, added _retire_ghost_groups, wired into run loop)
+  - config.yaml and test_config.yaml (added new config setting)
+  - src/tests/test_config.py (added 2 tests for new config field)
+  - src/tests/test_database.py (added 3 tests for delete_group_data)
+  - src/tests/test_state_manager.py (added 4 tests for remove_group)
+  - docs/01-configuration-spec.md (documented new config field)
+  - docs/02-database-design.md (documented new database functions)
+  - docs/04-state-manager.md (documented remove_group method)
+  - docs/10-idle-group-handling.md (new comprehensive documentation)
+
+- **Learnings for future iterations:**
+  - Idle group handling should check current status before acting to avoid redundant logs/writes
+  - Groups in Kafka but with no active members (Empty state) should not be retired - only groups completely absent from Kafka
+  - When adding new config fields with defaults, make them optional in load_config with required=False
+  - Ghost group retirement runs AFTER idle group transition in the same cycle to avoid race conditions
+  - State transitions should be logged once at transition time, not every cycle
+  - The sampler's batch transaction includes group status updates, idle handling, and retirement - all committed atomically
+---

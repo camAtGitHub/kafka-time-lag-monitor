@@ -17,6 +17,7 @@ monitoring:
   offline_detection_consecutive_samples: 5
   recovering_minimum_duration_seconds: 900
   online_lag_threshold_seconds: 600
+  absent_group_retention_seconds: 604800   # 7 days (optional, defaults to 604800)
 
 database:
   path: "/var/lib/kafka-lag-monitor/state.db"

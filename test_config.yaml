@@ -12,6 +12,7 @@ monitoring:
   offline_detection_consecutive_samples: 3
   recovering_minimum_duration_seconds: 5
   online_lag_threshold_seconds: 10
+  absent_group_retention_seconds: 3600    # 1 hour for test config
 
 database:
   path: "/tmp/state.db"
