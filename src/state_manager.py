@@ -18,15 +18,13 @@ class StateManager:
     is the single controlled access point for inter-thread shared data.
     """
     
-    def __init__(self, db_conn: Any, config: Any) -> None:
+    def __init__(self, db_conn: Any) -> None:
         """Initialize the state manager and load persisted state from database.
-        
+
         Args:
             db_conn: SQLite database connection
-            config: Configuration object
         """
         self._db_conn = db_conn
-        self._config = config
         self._lock = threading.RLock()
         
         # Initialize in-memory state structure

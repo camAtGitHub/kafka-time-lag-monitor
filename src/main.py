@@ -157,7 +157,7 @@ def main() -> int:
     admin_client = kafka_client.build_admin_client(cfg)
     
     # Create state manager
-    state_mgr = state_manager.StateManager(db_conn, cfg)
+    state_mgr = state_manager.StateManager(db_conn)
     
     # Create worker instances
     sampler_instance = sampler.Sampler(cfg, db_conn, admin_client, state_mgr)

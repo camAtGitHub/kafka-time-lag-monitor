@@ -40,7 +40,7 @@ def interpolate_timestamp(
     offset_range = upper_offset - lower_offset
     ts_range = upper_ts - lower_ts
     offset_ratio = (committed_offset - lower_offset) / offset_range
-    interpolated_ts = lower_ts + int(offset_ratio * ts_range)
+    interpolated_ts = lower_ts + round(offset_ratio * ts_range)
 
     return interpolated_ts
 

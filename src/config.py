@@ -131,6 +131,22 @@ def _validate_type(value: Any, expected_type: type, field_name: str) -> None:
             )
 
 
+def _validate_positive_int(value: int, field_name: str) -> None:
+    """Validate that an integer value is positive.
+
+    Args:
+        value: The integer to validate
+        field_name: Name of the field for error messages
+
+    Raises:
+        ConfigError: If value is not positive
+    """
+    if value <= 0:
+        raise ConfigError(
+            f"Field '{field_name}' must be a positive integer, got {value}"
+        )
+
+
 def load_config(path: str) -> Config:
     """Load and validate configuration from a YAML file.
     
@@ -177,55 +193,78 @@ def load_config(path: str) -> Config:
     
     sample_interval_seconds = _get_nested(monitoring_data, "sample_interval_seconds")
     _validate_type(sample_interval_seconds, int, "monitoring.sample_interval_seconds")
-    
+    _validate_positive_int(sample_interval_seconds, "monitoring.sample_interval_seconds")
+
     offline_sample_interval_seconds = _get_nested(
         monitoring_data, "offline_sample_interval_seconds"
     )
     _validate_type(
         offline_sample_interval_seconds, int, "monitoring.offline_sample_interval_seconds"
     )
-    
+    _validate_positive_int(
+        offline_sample_interval_seconds, "monitoring.offline_sample_interval_seconds"
+    )
+
     report_interval_seconds = _get_nested(monitoring_data, "report_interval_seconds")
     _validate_type(report_interval_seconds, int, "monitoring.report_interval_seconds")
-    
+    _validate_positive_int(report_interval_seconds, "monitoring.report_interval_seconds")
+
     housekeeping_interval_seconds = _get_nested(
         monitoring_data, "housekeeping_interval_seconds"
     )
     _validate_type(
         housekeeping_interval_seconds, int, "monitoring.housekeeping_interval_seconds"
     )
-    
+    _validate_positive_int(
+        housekeeping_interval_seconds, "monitoring.housekeeping_interval_seconds"
+    )
+
     max_entries_per_partition = _get_nested(monitoring_data, "max_entries_per_partition")
     _validate_type(
         max_entries_per_partition, int, "monitoring.max_entries_per_partition"
     )
-    
+    _validate_positive_int(
+        max_entries_per_partition, "monitoring.max_entries_per_partition"
+    )
+
     max_commit_entries_per_partition = _get_nested(
         monitoring_data, "max_commit_entries_per_partition"
     )
     _validate_type(
         max_commit_entries_per_partition, int, "monitoring.max_commit_entries_per_partition"
     )
-    
+    _validate_positive_int(
+        max_commit_entries_per_partition, "monitoring.max_commit_entries_per_partition"
+    )
+
     offline_detection_consecutive_samples = _get_nested(
         monitoring_data, "offline_detection_consecutive_samples"
     )
     _validate_type(
         offline_detection_consecutive_samples, int, "monitoring.offline_detection_consecutive_samples"
     )
-    
+    _validate_positive_int(
+        offline_detection_consecutive_samples, "monitoring.offline_detection_consecutive_samples"
+    )
+
     recovering_minimum_duration_seconds = _get_nested(
         monitoring_data, "recovering_minimum_duration_seconds"
     )
     _validate_type(
         recovering_minimum_duration_seconds, int, "monitoring.recovering_minimum_duration_seconds"
     )
-    
+    _validate_positive_int(
+        recovering_minimum_duration_seconds, "monitoring.recovering_minimum_duration_seconds"
+    )
+
     online_lag_threshold_seconds = _get_nested(
         monitoring_data, "online_lag_threshold_seconds"
     )
     _validate_type(
         online_lag_threshold_seconds, int, "monitoring.online_lag_threshold_seconds"
+    )
+    _validate_positive_int(
+        online_lag_threshold_seconds, "monitoring.online_lag_threshold_seconds"
     )
     
     monitoring = MonitoringConfig(

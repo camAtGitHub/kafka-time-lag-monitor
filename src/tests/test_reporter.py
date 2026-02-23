@@ -102,7 +102,7 @@ class TestReporterCycle:
             output = json.load(f)
 
         # Check top-level fields
-        assert isinstance(output["generated_at"], int)
+        assert isinstance(output["generated_at"], str)
         assert isinstance(output["consumers"], list)
 
         # Check consumer fields
@@ -117,7 +117,7 @@ class TestReporterCycle:
         assert isinstance(consumer["status"], str)
         assert isinstance(consumer["data_resolution"], str)
         assert isinstance(consumer["partitions_monitored"], int)
-        assert isinstance(consumer["calculated_at"], int)
+        assert isinstance(consumer["calculated_at"], str)
 
     def test_lag_seconds_is_zero_for_current_consumer(
         self, db_conn, mock_config, mock_state_manager

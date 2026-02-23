@@ -12,14 +12,9 @@ import state_manager
 from state_manager import StateManager
 
 
-class MockConfig:
-    """Mock configuration object for testing."""
-    pass
-
-
 class TestStateManager:
     """Test suite for StateManager class."""
-    
+
     def test_init_loads_preexisting_group_statuses(self, db_conn):
         """Test that StateManager loads pre-existing group statuses from database on construction."""
         # Insert some group statuses into the database first
@@ -32,10 +27,9 @@ class TestStateManager:
         database.upsert_group_status(
             db_conn, "group1", "topic2", "RECOVERING", 3000, 2500, 2
         )
-        
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
-        
+
+        sm = StateManager(db_conn)
+
         # Verify all statuses were loaded
         all_statuses = sm.get_all_group_statuses()
         assert len(all_statuses) == 3
@@ -51,8 +45,7 @@ class TestStateManager:
     
     def test_get_group_status_unknown_returns_default_online(self, db_conn):
         """Test that get_group_status returns default ONLINE state for unknown groups."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         status = sm.get_group_status("unknown_group", "unknown_topic")
         
@@ -63,8 +56,7 @@ class TestStateManager:
     
     def test_set_group_status_updates_in_memory(self, db_conn):
         """Test that set_group_status updates in-memory state."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         sm.set_group_status("group1", "topic1", "OFFLINE", 1000, 900, 3)
         
@@ -76,8 +68,7 @@ class TestStateManager:
     
     def test_set_group_status_persists_to_database(self, db_conn):
         """Test that set_group_status persists to database."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         sm.set_group_status("group1", "topic1", "RECOVERING", 2000, 1800, 1)
         
@@ -91,8 +82,7 @@ class TestStateManager:
     
     def test_get_group_status_returns_copy(self, db_conn):
         """Test that get_group_status returns a copy, not a reference."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         sm.set_group_status("group1", "topic1", "ONLINE", 1000, 900, 0)
         
@@ -112,8 +102,7 @@ class TestStateManager:
     
     def test_get_all_group_statuses_returns_copy(self, db_conn):
         """Test that get_all_group_statuses returns a copy, not a reference."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         sm.set_group_status("group1", "topic1", "ONLINE", 1000, 900, 0)
         
@@ -133,8 +122,7 @@ class TestStateManager:
     
     def test_update_and_get_thread_last_run(self, db_conn):
         """Test update_thread_last_run and get_thread_last_run."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         # Initially should be 0
         assert sm.get_thread_last_run("sampler") == 0
@@ -156,8 +144,7 @@ class TestStateManager:
     
     def test_set_and_get_last_json_output(self, db_conn):
         """Test set_last_json_output and get_last_json_output."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         # Initially should be empty
         assert sm.get_last_json_output() == {}
@@ -183,8 +170,7 @@ class TestStateManager:
     
     def test_concurrent_access_no_data_corruption(self, db_conn):
         """Test concurrent access from multiple threads."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         errors = []
         stop_event = threading.Event()
@@ -265,8 +251,7 @@ class TestStateManager:
     
     def test_status_update_overwrites_previous(self, db_conn):
         """Test that status updates overwrite previous values."""
-        config = MockConfig()
-        sm = StateManager(db_conn, config)
+        sm = StateManager(db_conn)
         
         # Set initial status
         sm.set_group_status("group1", "topic1", "ONLINE", 1000, 900, 0)

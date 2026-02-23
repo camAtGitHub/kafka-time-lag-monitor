@@ -3,6 +3,7 @@
 Transforms database state into consumer-facing JSON output files.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -98,7 +99,7 @@ class Reporter:
         
         # Assemble output
         output = {
-            "generated_at": now,
+            "generated_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat().replace('+00:00', 'Z'),
             "consumers": consumers
         }
         
@@ -179,7 +180,7 @@ class Reporter:
             "status": status,
             "data_resolution": data_resolution,
             "partitions_monitored": len(partitions),
-            "calculated_at": now
+            "calculated_at": datetime.datetime.fromtimestamp(now, datetime.timezone.utc).isoformat().replace('+00:00', 'Z')
         }
         
         return record

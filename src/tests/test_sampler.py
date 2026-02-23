@@ -241,7 +241,7 @@ class TestSamplerStateMachine:
         threshold = config.monitoring.offline_detection_consecutive_samples
 
         state_manager.set_group_status(
-            "group1", "topic1", "ONLINE", current_time, 0, threshold - 1
+            "group1", "topic1", "ONLINE", current_time, 0, threshold
         )
 
         for i in range(threshold):
@@ -266,7 +266,7 @@ class TestSamplerStateMachine:
         status = state_manager.get_group_status("group1", "topic1")
 
         assert status["status"] == "OFFLINE"
-        assert status["consecutive_static"] >= threshold
+        assert status["consecutive_static"] > threshold
 
     def test_offline_to_recovering_transition(self, db_conn):
         """State machine OFFLINE→RECOVERING"""
@@ -367,7 +367,7 @@ class TestSamplerStateMachine:
             "RECOVERING",
             current_time - 1000,
             current_time - 100,
-            threshold - 1,
+            threshold,
         )
 
         for i in range(threshold):

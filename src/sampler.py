@@ -133,18 +133,10 @@ class Sampler:
         """
         from kafka_client import get_committed_offsets
         
-        # Get topic/partitions for this specific group
-        # We need to fetch from Kafka to know what this group consumes
-        group_partitions = [
-            (t, p) for t, p in all_topic_partitions
-        ]
-        
-        if not group_partitions:
-            return
-        
-        # Fetch committed offsets for this group
+        # Get topic/partitions for this specific group by fetching committed offsets
+        # This tells us which partitions the group actually consumes
         committed_offsets = get_committed_offsets(
-            self._kafka_client, group_id, group_partitions
+            self._kafka_client, group_id, list(all_topic_partitions)
         )
         
         if not committed_offsets:
@@ -262,29 +254,30 @@ class Sampler:
         threshold = self._config.monitoring.offline_detection_consecutive_samples
         all_static_with_lag = True
         any_advancing = False
-        
+
         for partition in partitions:
             recent_commits = database.get_recent_commits(
                 self._db_conn, group_id, topic, partition, threshold
             )
-            
+
             if len(recent_commits) < threshold:
                 all_static_with_lag = False
                 any_advancing = True
-                break
-            
+                continue
+
             offsets = [commit[0] for commit in recent_commits]
             committed = offsets[0] if offsets else 0
             produced = latest_offsets.get((topic, partition), 0)
             has_lag = committed < produced
-            
+
             if len(set(offsets)) == 1 and has_lag:
+                # Static with lag - keep checking other partitions
                 pass
             else:
+                # Either no lag or offset is advancing
                 all_static_with_lag = False
                 if len(set(offsets)) != 1:
                     any_advancing = True
-                break
         
         current_time = int(cycle_start)
         new_status = current_status
@@ -293,8 +286,8 @@ class Sampler:
         
         if all_static_with_lag:
             new_consecutive_static = consecutive_static + 1
-            
-            if new_consecutive_static >= threshold:
+
+            if new_consecutive_static > threshold:
                 if current_status == "ONLINE":
                     new_status = "OFFLINE"
                 elif current_status == "RECOVERING":
