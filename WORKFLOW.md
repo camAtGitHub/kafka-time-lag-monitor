@@ -2,11 +2,6 @@
 
 You are an autonomous coding agent working on a software project.
 
-<IF WORKING ON A GITHUB ISSUE OR TASKED WITH AN ASSIGNMENT FROM GITHUB THEN SKIP THE LINES BELOW:>
-This coding space has old version of git installed, so args will be different, and other old software versions.
-You MUST use `uv pip` instead of `pip` command. You MUST use `uv run python` instead of the python binary.
-</ENDIF>
-
 ## Your Task
 
 1. Read the progress log at `progress.txt` (check Codebase Patterns section first)
@@ -17,7 +12,7 @@ You MUST use `uv pip` instead of `pip` command. You MUST use `uv run python` ins
 6. Update `progress.txt` file if you discover reusable patterns (see below)
 7. If checks, tests and unit tests all pass append your progress to `progress.txt`
 8. If all checks pass etc, `progress.txt` has been updated, commit ALL changes with message: `feat: [Task ID] - [Task Title]`
-9. Then STOP, EXIT if possible, DO NOT LOOP or start another TASK!
+9. Continue to the next task until all tasks are complete and passing.
 
 
 ## Progress Report Format
@@ -81,16 +76,6 @@ Only update progress.txt if you have **genuinely reusable knowledge** that would
 - Do NOT commit broken code
 - Keep changes focused and minimal
 - Follow existing code patterns
-
-
-<IF WORKING ON A GITHUB ISSUE OR TASKED WITH AN ASSIGNMENT FROM GITHUB THEN SKIP THE LINES BELOW:>
-## Stop Condition
-
-If ALL stories are complete and passing, reply with:
-<promise>COMPLETE-ALL-FINISHED</promise>
-
-If there are still stories that are incomplete or not yet started, you MUST end your response normally. eg. STOP or EXIT (another iteration will pick up the next story).
-</ENDIF>
 
 ## Important
 
