@@ -67,10 +67,9 @@ class Sampler:
                     )
                 ]
 
-                if not active_groups:
-                    logger.debug("No active consumer groups to sample")
-                else:
-                    # Step 2: Get topic/partitions consumed by each group
+                # Step 2: Get topic/partitions consumed by each group
+                group_topic_partitions = {}
+                if active_groups:
                     group_topic_partitions = get_all_consumed_topic_partitions(
                         self._kafka_client, active_groups
                     )
@@ -85,45 +84,60 @@ class Sampler:
                             )
                         }
 
-                    # Step 3: Bulk fetch latest produced offsets for all partitions
-                    all_topic_partitions = set()
-                    for partitions in group_topic_partitions.values():
-                        all_topic_partitions.update(partitions)
+                # Step 3: Bulk fetch latest produced offsets for all partitions
+                all_topic_partitions = set()
+                for partitions in group_topic_partitions.values():
+                    all_topic_partitions.update(partitions)
 
-                    # Augment with idle groups' historical partitions
-                    all_group_ids_with_history = database.get_all_groups_with_history(
-                        self._db_conn
-                    )
-                    active_group_set = set(active_groups)
-                    for group_id in all_group_ids_with_history:
-                        if group_id not in active_group_set:
-                            tracked_topics = database.get_group_tracked_topics(
-                                self._db_conn, group_id
-                            )
-                            for topic in tracked_topics:
-                                partitions = self._get_partitions_for_topic(
-                                    group_id, topic
-                                )
-                                for partition in partitions:
-                                    all_topic_partitions.add((topic, partition))
-
-                    latest_offsets = {}
-                    if all_topic_partitions:
-                        latest_offsets = get_latest_produced_offsets(
-                            self._kafka_client, list(all_topic_partitions)
+                # Augment with idle groups' historical partitions
+                # Track idle partitions separately for write pass
+                idle_topic_partitions = set()
+                all_group_ids_with_history = database.get_all_groups_with_history(
+                    self._db_conn
+                )
+                active_group_set = set(active_groups)
+                for group_id in all_group_ids_with_history:
+                    if group_id not in active_group_set:
+                        tracked_topics = database.get_group_tracked_topics(
+                            self._db_conn, group_id
                         )
+                        for topic in tracked_topics:
+                            partitions = self._get_partitions_for_topic(
+                                group_id, topic
+                            )
+                            for partition in partitions:
+                                partition_tuple = (topic, partition)
+                                all_topic_partitions.add(partition_tuple)
+                                idle_topic_partitions.add(partition_tuple)
 
-                    # Step 4: Process each group
-                    for group_id in active_groups:
-                        self._process_group(
-                            group_id,
-                            group_topic_partitions,
-                            latest_offsets,
+                latest_offsets = {}
+                if all_topic_partitions:
+                    latest_offsets = get_latest_produced_offsets(
+                        self._kafka_client, list(all_topic_partitions)
+                    )
+
+                # Step 3b: Write partition offsets for idle group partitions
+                # These won't be written by _process_group since they're not in active_groups
+                for topic, partition in idle_topic_partitions:
+                    if (topic, partition) in latest_offsets:
+                        self._write_partition_offset_if_needed(
+                            topic,
+                            partition,
+                            latest_offsets[(topic, partition)],
                             cycle_start,
                         )
 
-                    # Batch commit all writes at end of cycle
-                    database.commit_batch(self._db_conn)
+                # Step 4: Process each group
+                for group_id in active_groups:
+                    self._process_group(
+                        group_id,
+                        group_topic_partitions,
+                        latest_offsets,
+                        cycle_start,
+                    )
+
+                # Batch commit all writes at end of cycle
+                database.commit_batch(self._db_conn)
 
                 # Update thread last run timestamp
                 self._state_manager.update_thread_last_run("sampler", int(cycle_start))
