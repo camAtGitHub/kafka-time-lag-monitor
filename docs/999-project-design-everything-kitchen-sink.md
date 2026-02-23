@@ -127,6 +127,20 @@ PRAGMA auto_vacuum=INCREMENTAL;
 
 WAL mode allows concurrent reads and writes from multiple threads without blocking. `INCREMENTAL` auto_vacuum enables the housekeeping thread to reclaim disk space in small increments rather than requiring a full blocking VACUUM.
 
+**Connection timeout:** All connections are created with a 30-second timeout to handle transient lock contention gracefully.
+
+### Transaction Model
+
+Each worker thread (sampler, reporter, housekeeping) creates its own database connection. The sampler is the only writer during its cycle and uses a batch transaction pattern:
+
+1. Begin transaction (implicit on first write)
+2. Write consumer_commits, partition_offsets, and group_status rows
+3. Single `commit_batch()` call commits all writes atomically
+
+The StateManager does not write to the database directly. Instead, the sampler calls `state_manager.persist_group_statuses(sampler_conn)` at the end of its cycle to fold all status updates into the sampler's open transaction. This maintains the single-writer pattern and eliminates lock contention.
+
+Reporter and housekeeping threads are pure readers during a sampler cycle and are never blocked by the sampler's writes (thanks to WAL mode).
+
 ### Table Definitions
 
 **`partition_offsets`** — the interpolation table. One row per sample per topic/partition. Not group-scoped — multiple groups consuming the same partition share this data.
@@ -180,13 +194,15 @@ Primary key: `(group_id, topic)`
 ### Required Functions
 
 - `init_db(path) -> connection` — create tables if not exist, set pragmas, return connection
+- `get_connection(path) -> connection` — create new connection with timeout and pragmas set
 - `insert_partition_offset(conn, topic, partition, offset, sampled_at)`
 - `insert_consumer_commit(conn, group_id, topic, partition, committed_offset, recorded_at)`
 - `get_interpolation_points(conn, topic, partition) -> list[tuple[int, int]]` — returns list of `(offset, sampled_at)` ordered by `sampled_at DESC`
 - `get_recent_commits(conn, group_id, topic, partition, limit) -> list[tuple[int, int]]` — returns `(committed_offset, recorded_at)` rows
 - `get_last_write_time(conn, topic, partition) -> int | None` — most recent `sampled_at` for this topic/partition
 - `get_group_status(conn, group_id, topic) -> dict | None`
-- `upsert_group_status(conn, group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static)`
+- `upsert_group_status(conn, group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static)` — **does not commit**; caller must commit
+- `commit_batch(conn)` — explicit commit for batch transaction at end of sampler cycle
 - `load_all_group_statuses(conn) -> dict` — used at startup to rehydrate state manager
 - `is_topic_excluded(conn, topic, config_exclusions) -> bool`
 - `is_group_excluded(conn, group_id, config_exclusions) -> bool`
@@ -223,6 +239,8 @@ All functions must catch all exceptions internally, log a warning with context, 
 
 Owns the single shared in-memory state dictionary used for communication between threads. All access is protected by a `threading.RLock`. This is the only sanctioned way for threads to share data — threads do not call each other directly.
 
+**Key architectural principle:** StateManager is purely in-memory during operation. Database persistence is deferred and folded into the sampler's batch transaction to maintain the single-writer pattern.
+
 ### In-Memory State Structure
 
 ```python
@@ -246,14 +264,26 @@ Owns the single shared in-memory state dictionary used for communication between
 
 ### Required Functions
 
-- `__init__(db_conn)` — loads persisted group statuses from database into memory on construction
+- `__init__(db_path, config)` — loads persisted group statuses from database into memory on construction. Opens connection inline, loads data, then closes it immediately. Does not maintain a persistent connection.
 - `get_group_status(group_id, topic) -> dict` — returns status dict; defaults to ONLINE state if unknown
-- `set_group_status(group_id, topic, status, **kwargs)` — updates memory and persists to database atomically
+- `set_group_status(group_id, topic, status, **kwargs)` — **updates in-memory state only**. Does not write to database. Persistence is handled separately by `persist_group_statuses()`.
+- `persist_group_statuses(conn)` — writes all current group statuses to database using the provided connection. Called by sampler at end of cycle as part of batch transaction. Does not commit; that's handled by `commit_batch()`.
 - `get_all_group_statuses() -> dict` — returns a snapshot copy of the full status dict
 - `update_thread_last_run(thread_name, timestamp)`
 - `get_thread_last_run(thread_name) -> int`
 - `set_last_json_output(output_dict)`
 - `get_last_json_output() -> dict`
+
+### Transaction Model
+
+StateManager does **not** write to the database during normal operation. The `set_group_status()` method only updates in-memory state. At the end of each sampler cycle, the sampler calls `persist_group_statuses(sampler_db_conn)` to fold all status updates into the sampler's open transaction. This ensures:
+
+1. Single writer per cycle (no lock contention)
+2. All writes (consumer_commits, partition_offsets, group_status) committed atomically
+3. StateManager has no persistent database connection to manage
+4. Clean transaction boundaries throughout the system
+
+The `INSERT OR REPLACE` semantics of `upsert_group_status` make it safe to write all statuses on every cycle, even if they haven't changed.
 
 ---
 
@@ -334,7 +364,9 @@ Runs in a continuous loop. Each cycle: queries Kafka for current partition heads
         iii. Get last write time for this (topic, partition) from partition_offsets
         iv.  If elapsed time >= cadence: write to partition_offsets (only if offset changed OR cadence elapsed regardless)
     c. Evaluate state machine for this (group_id, topic) — see below
-6. Sleep for remainder of sample_interval_seconds
+6. Persist all group statuses to database via state_manager.persist_group_statuses(conn)
+7. Commit batch transaction via database.commit_batch(conn)
+8. Sleep for remainder of sample_interval_seconds
 ```
 
 ### State Machine Evaluation
