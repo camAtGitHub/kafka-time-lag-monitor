@@ -142,6 +142,10 @@ class Sampler:
                         cycle_start,
                     )
 
+                # Step 5: Persist group statuses to database
+                # This folds all group status updates into the sampler's transaction
+                self._state_manager.persist_group_statuses(self._db_conn)
+
                 # Batch commit all writes at end of cycle
                 database.commit_batch(self._db_conn)
 

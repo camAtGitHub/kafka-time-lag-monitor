@@ -81,11 +81,19 @@ class TestStateManager:
         assert status["consecutive_static"] == 3
 
     def test_set_group_status_persists_to_database(self, db_path_initialized):
-        """Test that set_group_status persists to database."""
+        """Test that persist_group_statuses writes to database."""
         config = MockConfig()
         sm = StateManager(db_path_initialized, config)
 
         sm.set_group_status("group1", "topic1", "RECOVERING", 2000, 1800, 1)
+
+        # Persist to database
+        conn = database.get_connection(db_path_initialized)
+        try:
+            sm.persist_group_statuses(conn)
+            conn.commit()
+        finally:
+            conn.close()
 
         # Verify by querying database directly
         conn = database.get_connection(db_path_initialized)
@@ -286,6 +294,14 @@ class TestStateManager:
         assert status["status"] == "OFFLINE"
         assert status["status_changed_at"] == 2000
         assert status["consecutive_static"] == 5
+
+        # Persist to database
+        conn = database.get_connection(db_path_initialized)
+        try:
+            sm.persist_group_statuses(conn)
+            conn.commit()
+        finally:
+            conn.close()
 
         # Verify in database as well
         conn = database.get_connection(db_path_initialized)
