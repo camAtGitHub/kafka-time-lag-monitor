@@ -54,6 +54,10 @@ class MockStateManager:
             "consecutive_static": consecutive_static,
         }
 
+    def persist_group_statuses(self, conn):
+        """Mock persist_group_statuses - no-op for tests."""
+        pass
+
     def get_all_group_statuses(self):
         return self._statuses.copy()
 

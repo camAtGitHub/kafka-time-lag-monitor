@@ -15,6 +15,20 @@ PRAGMA auto_vacuum=INCREMENTAL;
 
 WAL mode allows concurrent reads and writes from multiple threads without blocking. `INCREMENTAL` auto_vacuum enables the housekeeping thread to reclaim disk space in small increments rather than requiring a full blocking VACUUM.
 
+**Connection timeout:** All connections are created with a 30-second timeout to handle transient lock contention gracefully.
+
+### Transaction Model
+
+Each worker thread (sampler, reporter, housekeeping) creates its own database connection. The sampler is the only writer during its cycle and uses a batch transaction pattern:
+
+1. Begin transaction (implicit on first write)
+2. Write consumer_commits, partition_offsets, and group_status rows
+3. Single `commit_batch()` call commits all writes atomically
+
+The StateManager does not write to the database directly. Instead, the sampler calls `state_manager.persist_group_statuses(sampler_conn)` at the end of its cycle to fold all status updates into the sampler's open transaction. This maintains the single-writer pattern and eliminates lock contention.
+
+Reporter and housekeeping threads are pure readers during a sampler cycle and are never blocked by the sampler's writes (thanks to WAL mode).
+
 ### Table Definitions
 
 **`partition_offsets`** — the interpolation table. One row per sample per topic/partition. Not group-scoped — multiple groups consuming the same partition share this data.
@@ -68,13 +82,15 @@ Primary key: `(group_id, topic)`
 ### Required Functions
 
 - `init_db(path) -> connection` — create tables if not exist, set pragmas, return connection
+- `get_connection(path) -> connection` — create new connection with timeout and pragmas set
 - `insert_partition_offset(conn, topic, partition, offset, sampled_at)`
 - `insert_consumer_commit(conn, group_id, topic, partition, committed_offset, recorded_at)`
+- `commit_batch(conn)` — explicit commit for batch transaction at end of sampler cycle
 - `get_interpolation_points(conn, topic, partition) -> list[tuple[int, int]]` — returns list of `(offset, sampled_at)` ordered by `sampled_at DESC`
 - `get_recent_commits(conn, group_id, topic, partition, limit) -> list[tuple[int, int]]` — returns `(committed_offset, recorded_at)` rows
 - `get_last_write_time(conn, topic, partition) -> int | None` — most recent `sampled_at` for this topic/partition
 - `get_group_status(conn, group_id, topic) -> dict | None`
-- `upsert_group_status(conn, group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static)`
+- `upsert_group_status(conn, group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static)` — **does not commit**; caller must commit
 - `load_all_group_statuses(conn) -> dict` — used at startup to rehydrate state manager
 - `is_topic_excluded(conn, topic, config_exclusions) -> bool`
 - `is_group_excluded(conn, group_id, config_exclusions) -> bool`

@@ -13,6 +13,7 @@ Startup Behavior Note:
 """
 
 import copy
+import sqlite3
 import threading
 from typing import Any, Dict, Optional, Tuple
 
@@ -34,7 +35,6 @@ class StateManager:
             config: Configuration object
         """
         self._db_path = db_path
-        self._db_conn = database.get_connection(db_path)
         self._config = config
         self._lock = threading.RLock()
 
@@ -50,9 +50,14 @@ class StateManager:
 
     def _load_group_statuses(self) -> None:
         """Load all group statuses from database into memory."""
-        statuses = database.load_all_group_statuses(self._db_conn)
-        with self._lock:
-            self._state["group_statuses"] = statuses
+        # Open connection inline for startup only
+        conn = database.get_connection(self._db_path)
+        try:
+            statuses = database.load_all_group_statuses(conn)
+            with self._lock:
+                self._state["group_statuses"] = statuses
+        finally:
+            conn.close()
 
     def get_group_status(self, group_id: str, topic: str) -> Dict[str, Any]:
         """Get the status for a group/topic combination.
@@ -93,8 +98,9 @@ class StateManager:
     ) -> None:
         """Set the status for a group/topic combination.
 
-        Updates both in-memory state and persists to database atomically
-        within the same lock acquisition.
+        Updates in-memory state only. Persistence is handled by
+        persist_group_statuses() which is called by the sampler at the
+        end of its cycle as part of the batch transaction.
 
         Args:
             group_id: Consumer group ID
@@ -115,19 +121,31 @@ class StateManager:
         with self._lock:
             self._state["group_statuses"][key] = status_dict
 
-        db_conn = database.get_connection(self._db_path)
-        try:
+    def persist_group_statuses(self, conn: sqlite3.Connection) -> None:
+        """Persist all group statuses to database using the provided connection.
+
+        Called by the sampler at the end of its cycle to fold all group status
+        updates into the sampler's batch transaction. No commit is issued here;
+        that's handled by commit_batch().
+
+        Args:
+            conn: Database connection (sampler's connection)
+        """
+        # Snapshot current group statuses under lock
+        with self._lock:
+            statuses_snapshot = copy.deepcopy(self._state["group_statuses"])
+
+        # Write each entry to database using sampler's connection
+        for (group_id, topic), status_dict in statuses_snapshot.items():
             database.upsert_group_status(
-                db_conn,
+                conn,
                 group_id,
                 topic,
-                status,
-                status_changed_at,
-                last_advancing_at,
-                consecutive_static,
+                status_dict["status"],
+                status_dict["status_changed_at"],
+                status_dict["last_advancing_at"],
+                status_dict["consecutive_static"],
             )
-        finally:
-            db_conn.close()
 
     def get_all_group_statuses(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         """Get a snapshot copy of all group statuses.

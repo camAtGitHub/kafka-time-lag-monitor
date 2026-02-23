@@ -154,31 +154,6 @@ def get_latest_produced_offsets(
         return {}
 
 
-def get_topic_partition_count(admin_client: AdminClient, topic: str) -> int:
-    """Get the number of partitions for a topic.
-
-    Args:
-        admin_client: Configured AdminClient instance
-        topic: Topic name
-
-    Returns:
-        Number of partitions. 0 on error.
-    """
-    try:
-        future_map = admin_client.describe_topics([topic])
-        future = future_map[topic]
-        result = future.result()
-
-        if result.error is not None:
-            logger.warning(f"Error describing topic {topic}: {result.error}")
-            return 0
-
-        return len(result.partitions)
-    except Exception as e:
-        logger.warning(f"Failed to get partition count for topic {topic}: {e}")
-        return 0
-
-
 def get_all_consumed_topic_partitions(
     admin_client: AdminClient, group_ids: List[str]
 ) -> Dict[str, Set[Tuple[str, int]]]:

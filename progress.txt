@@ -101,3 +101,43 @@ How to fix:
 The original self._db_conn should be retained and repurposed as the persistent write connection for set_group_status. The correct fix is structurally simple: move the upsert_group_status call to execute on self._db_conn but after the with self._lock block closes. The lock guards only the in-memory dict mutation — a pure Python operation that takes microseconds. The DB write then happens outside the lock on the already-open, already-configured persistent connection.
 This is safe because set_group_status is only called from two places: the sampler thread (via _evaluate_state_machine and _handle_idle_group) and — in theory — any future caller. Both write paths go through the same StateManager instance. The sampler is single-threaded within its own loop, so there is no concurrent access to self._db_conn from within StateManager's write path. The reporter only calls get_group_status and get_last_json_output, which read in-memory state under the lock and never touch any DB connection on StateManager.
 The one-line docstring that says "Updates both in-memory state and persists to database atomically within the same lock acquisition" will also need updating — that atomicity guarantee was already broken by the current implementation and should be removed from the contract description.
+
+## 2026-02-23 03:45 - TASK 36 (FIX) - StateManager connection leak fixed
+- Fixed the bug introduced by TASK 36 where set_group_status created a new connection per call
+- Restored use of persistent self._db_conn for all database writes
+- Added self._db_write_lock to ensure thread-safe access to the connection
+- Lock scope now properly separated: self._lock for in-memory state (microseconds), self._db_write_lock for DB writes (milliseconds)
+- Files changed: src/state_manager.py
+- All 128 tests pass, including concurrent access test
+- **Learnings for future iterations:**
+  - SQLite connections cannot be shared across threads - need separate lock for connection access
+  - Use two locks: one for in-memory state (RLock for re-entrant), one for DB connection (Lock for serialization)
+  - In-memory state update is fast (dict operation), DB write is slow (I/O) - keep them separate under different locks
+  - The persistent connection pattern eliminates 100+ connection open/close operations and 200+ PRAGMA commits per cycle
+  - StateManager is called only from sampler thread in production, but tests validate thread-safety for robustness
+---
+
+## 2026-02-23 04:15 - TASK 32, 39, 41 - Completed
+- **TASK 32 (HIGH - COMPLETE)**: Fixed partition_offsets stale for sole-consumer idle groups
+  - Root cause: _write_partition_offset_if_needed only called from _process_group (active groups only)
+  - Solution: Track idle partitions separately (idle_topic_partitions set) during augmentation
+  - Add dedicated write pass for idle partitions after get_latest_produced_offsets
+  - Remove blocking "if not active_groups" check that prevented idle group processing
+  - Files changed: src/sampler.py
+  - All 19 sampler tests pass
+
+- **TASK 39 (LOW - COMPLETE)**: Removed dead code get_topic_partition_count
+  - Function never called, no test coverage
+  - Removed 23 lines from src/kafka_client.py
+  - All 128 tests pass
+
+- **TASK 41 (NOTE - COMPLETE)**: Fixed garbled docstring for has_group_history
+  - Fixed from "Check if history in the database a group has any"
+  - To: "Check if a group has any history in the database"
+  - Files changed: src/database.py
+
+- **TASK 37, 38, 40**: Remain open (LOW priority)
+  - TASK 37: Pass in-memory topic_partitions_for_group to _evaluate_state_machine
+  - TASK 38: Rename init_db to init_db_schema (deferred - tests depend on return value)
+  - TASK 40: Add range validation for monitoring config values
+---

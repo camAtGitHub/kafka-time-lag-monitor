@@ -77,7 +77,7 @@ def _create_connection(path: str) -> sqlite3.Connection:
     Returns:
         sqlite3.Connection: Database connection with row factory and PRAGMAs set
     """
-    conn = sqlite3.connect(path, check_same_thread=False)
+    conn = sqlite3.connect(path, check_same_thread=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
 
     # Set required PRAGMAs
@@ -302,8 +302,8 @@ def upsert_group_status(
         consecutive_static: Counter for consecutive static samples
     """
     conn.execute(
-        """INSERT OR REPLACE INTO group_status 
-           (group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static) 
+        """INSERT OR REPLACE INTO group_status
+           (group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static)
            VALUES (?, ?, ?, ?, ?, ?)""",
         (
             group_id,
@@ -314,7 +314,6 @@ def upsert_group_status(
             consecutive_static,
         ),
     )
-    conn.commit()
 
 
 def load_all_group_statuses(
@@ -504,7 +503,7 @@ def get_group_tracked_topics(conn: sqlite3.Connection, group_id: str) -> List[st
 
 
 def has_group_history(conn: sqlite3.Connection, group_id: str) -> bool:
-    """Check if history in the database a group has any.
+    """Check if a group has any history in the database.
 
     Args:
         conn: Database connection
