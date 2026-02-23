@@ -140,25 +140,32 @@ class Reporter:
             recent_commits = database.get_recent_commits(
                 self._db_conn, group_id, topic, partition, limit=1
             )
-            
+
             if not recent_commits:
+                logger.debug(
+                    f"No recent commits for group={group_id}, topic={topic}, partition={partition}"
+                )
                 continue
-            
+
             committed_offset = recent_commits[0][0]
-            
+
             # Get interpolation points
             interpolation_points = database.get_interpolation_points(
                 self._db_conn, topic, partition
             )
-            
+
             # Calculate lag
             lag_seconds, method = interpolation.calculate_lag_seconds(
                 committed_offset, interpolation_points, now
             )
-            
+
             partition_lags.append((partition, lag_seconds, method))
-        
+
         if not partition_lags:
+            logger.warning(
+                f"No partition lag data available for group={group_id}, topic={topic}. "
+                f"Skipping this consumer from output."
+            )
             return None
         
         # Aggregate across partitions

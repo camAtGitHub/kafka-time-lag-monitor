@@ -88,10 +88,11 @@ class StateManager:
         consecutive_static: int
     ) -> None:
         """Set the status for a group/topic combination.
-        
+
         Updates both in-memory state and persists to database atomically
-        within the same lock acquisition.
-        
+        within the same lock acquisition. If database write fails, the
+        in-memory state is rolled back to maintain consistency.
+
         Args:
             group_id: Consumer group ID
             topic: Topic name
@@ -107,20 +108,40 @@ class StateManager:
             "last_advancing_at": last_advancing_at,
             "consecutive_static": consecutive_static
         }
-        
+
         with self._lock:
+            # Save previous state for rollback
+            old_state = self._state["group_statuses"].get(key)
+
             # Update in-memory state
             self._state["group_statuses"][key] = status_dict
+
             # Persist to database
-            database.upsert_group_status(
-                self._db_conn,
-                group_id,
-                topic,
-                status,
-                status_changed_at,
-                last_advancing_at,
-                consecutive_static
-            )
+            try:
+                database.upsert_group_status(
+                    self._db_conn,
+                    group_id,
+                    topic,
+                    status,
+                    status_changed_at,
+                    last_advancing_at,
+                    consecutive_static
+                )
+            except Exception as e:
+                # Rollback in-memory state on database error
+                if old_state is not None:
+                    self._state["group_statuses"][key] = old_state
+                else:
+                    # Remove the newly added entry
+                    self._state["group_statuses"].pop(key, None)
+
+                # Re-raise the exception to notify caller
+                import logging
+                logging.getLogger(__name__).error(
+                    f"Failed to persist group status for {group_id}/{topic}: {e}. "
+                    f"In-memory state rolled back."
+                )
+                raise
     
     def get_all_group_statuses(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         """Get a snapshot copy of all group statuses.

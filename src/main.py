@@ -43,33 +43,38 @@ def verify_kafka_connectivity(
     retry_interval: int = 10
 ) -> bool:
     """Verify Kafka connectivity at startup.
-    
+
     Args:
         kafka_client_module: The kafka_client module
         config: Configuration object
         timeout_seconds: Maximum time to wait for connectivity
         retry_interval: Seconds between retries
-        
+
     Returns:
         True if connected successfully
-        
+
     Raises:
         RuntimeError: If connection cannot be established within timeout
     """
-    admin_client = kafka_client.build_admin_client(config)
     start_time = time.time()
     last_error = None
-    
+    admin_client = None
+
     while time.time() - start_time < timeout_seconds:
         try:
+            # Build admin client inside the retry loop
+            if admin_client is None:
+                admin_client = kafka_client.build_admin_client(config)
+
             groups = kafka_client.get_active_consumer_groups(admin_client)
             logger.info(f"Kafka connectivity verified: {len(groups)} consumer groups found")
             return True
         except Exception as e:
             last_error = e
+            admin_client = None  # Reset client on error
             logger.warning(f"Kafka connectivity check failed: {e}. Retrying in {retry_interval}s...")
             time.sleep(retry_interval)
-    
+
     raise RuntimeError(
         f"Failed to connect to Kafka after {timeout_seconds}s: {last_error}"
     )
