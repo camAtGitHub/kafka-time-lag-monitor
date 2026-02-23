@@ -129,9 +129,12 @@ class Sampler:
                             cycle_start,
                         )
 
-                # Step 3c: Mark idle groups as OFFLINE
+                # Step 3c: Mark idle groups as OFFLINE (transition only — no repeat writes)
                 for group_id in idle_groups_with_history:
                     self._handle_idle_group(group_id, cycle_start)
+
+                # Step 3d: Retire ghost groups (absent from Kafka past retention period)
+                self._retire_ghost_groups(idle_groups_with_history, cycle_start)
 
                 # Step 4: Process each group
                 for group_id in active_groups:
@@ -432,29 +435,130 @@ class Sampler:
     def _handle_idle_group(self, group_id: str, cycle_start: float) -> None:
         """Handle a group with no active partitions.
 
+        Checks current state for each tracked topic. Only logs WARNING and
+        writes OFFLINE status on the first cycle the group is detected as idle
+        (i.e. a genuine state transition). Subsequent cycles where the group
+        is already OFFLINE produce a DEBUG log only — no DB write.
+
         Args:
             group_id: The consumer group ID
             cycle_start: Timestamp when the cycle started
         """
         has_history = database.has_group_history(self._db_conn, group_id)
 
-        if has_history:
-            tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
+        if not has_history:
+            logger.debug(f"No partitions assigned to group {group_id}")
+            return
+
+        tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
+        current_time = int(cycle_start)
+
+        for topic in tracked_topics:
+            existing_status = self._state_manager.get_group_status(group_id, topic)
+            current_status = existing_status.get("status", "ONLINE")
+            last_advancing_at = existing_status.get("last_advancing_at", 0)
+
+            if current_status == "OFFLINE":
+                # Already OFFLINE from a previous cycle — steady state, no action needed.
+                # Retirement (if applicable) is handled separately by _retire_ghost_groups.
+                logger.debug(
+                    f"Group {group_id}/{topic} remains OFFLINE (no active partitions)"
+                )
+                continue
+
+            # This is a genuine transition: group was ONLINE or RECOVERING and has
+            # now lost all partitions. Log once and write the status change.
             logger.warning(
                 f"Group {group_id} has no active partitions but has DB history "
-                f"for topics: {tracked_topics}. Marking as OFFLINE."
+                f"for topic '{topic}'. Transitioning {current_status} -> OFFLINE."
             )
-            current_time = int(cycle_start)
+            self._state_manager.set_group_status(
+                group_id,
+                topic,
+                "OFFLINE",
+                current_time,
+                last_advancing_at,
+                self._config.monitoring.offline_detection_consecutive_samples,
+            )
+
+    def _retire_ghost_groups(
+        self, idle_groups_with_history: set, cycle_start: float
+    ) -> None:
+        """Retire groups that are absent from Kafka and have been OFFLINE long enough.
+
+        Only called for groups in idle_groups_with_history — the set of groups
+        that do not appear in get_active_consumer_groups() at all. Groups that
+        ARE in Kafka (even with no active members / Empty state) are not retired
+        here; their lifecycle is managed by the Kafka administrator.
+
+        A group is retired when ALL of the following are true:
+          - It is absent from Kafka entirely (in idle_groups_with_history)
+          - Every tracked topic for the group has status OFFLINE
+          - The earliest status_changed_at across all topics is older than
+            absent_group_retention_seconds
+
+        On retirement:
+          - All consumer_commits rows for the group are deleted
+          - All group_status rows for the group are deleted
+          - In-memory state is cleared via state_manager.remove_group()
+          - An INFO log is emitted with the group ID and how long it was OFFLINE
+
+        partition_offsets is NOT cleaned up here — it is keyed by topic/partition
+        only and shared across groups. Housekeeping prunes it by row count naturally.
+
+        Args:
+            idle_groups_with_history: Set of group IDs absent from Kafka but with
+                                      historical data in the database
+            cycle_start: Timestamp when the cycle started
+        """
+        retention = self._config.monitoring.absent_group_retention_seconds
+        current_time = int(cycle_start)
+
+        for group_id in idle_groups_with_history:
+            tracked_topics = database.get_group_tracked_topics(
+                self._db_conn, group_id
+            )
+
+            if not tracked_topics:
+                continue
+
+            # All topics must be OFFLINE, and we find the earliest OFFLINE timestamp
+            should_retire = True
+            earliest_offline_at = current_time
+
             for topic in tracked_topics:
-                existing_status = self._state_manager.get_group_status(group_id, topic)
-                last_advancing_at = existing_status.get("last_advancing_at", 0)
-                self._state_manager.set_group_status(
-                    group_id,
-                    topic,
-                    "OFFLINE",
-                    current_time,
-                    last_advancing_at,
-                    self._config.monitoring.offline_detection_consecutive_samples,
+                status = self._state_manager.get_group_status(group_id, topic)
+
+                if status.get("status") != "OFFLINE":
+                    # Group has a topic not yet OFFLINE — not ready for retirement.
+                    # This can happen on the same cycle _handle_idle_group transitions
+                    # it, since retirement runs after idle handling.
+                    should_retire = False
+                    break
+
+                topic_offline_since = status.get("status_changed_at", current_time)
+                earliest_offline_at = min(earliest_offline_at, topic_offline_since)
+
+            if not should_retire:
+                continue
+
+            time_offline_seconds = current_time - earliest_offline_at
+
+            if time_offline_seconds < retention:
+                logger.debug(
+                    f"Ghost group {group_id} has been OFFLINE for "
+                    f"{time_offline_seconds // 3600:.1f}h — "
+                    f"retention period is {retention // 3600:.1f}h, not retiring yet."
                 )
-        else:
-            logger.debug(f"No partitions assigned to group {group_id}")
+                continue
+
+            # Retention period exceeded — retire the group
+            logger.info(
+                f"Retiring ghost group '{group_id}': absent from Kafka, "
+                f"OFFLINE for {time_offline_seconds // 3600:.1f}h "
+                f"(retention threshold: {retention // 3600:.1f}h). "
+                f"Removing from database. Topics were: {tracked_topics}"
+            )
+
+            database.delete_group_data(self._db_conn, group_id)
+            self._state_manager.remove_group(group_id)

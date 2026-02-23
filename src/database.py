@@ -530,3 +530,25 @@ def get_all_groups_with_history(conn: sqlite3.Connection) -> List[str]:
     """
     cursor = conn.execute("SELECT DISTINCT group_id FROM consumer_commits")
     return [row[0] for row in cursor.fetchall()]
+
+
+def delete_group_data(conn: sqlite3.Connection, group_id: str) -> None:
+    """Delete all database records for a consumer group.
+
+    Removes rows from consumer_commits and group_status for the given group.
+    Does NOT touch partition_offsets — that table is keyed by topic/partition
+    only and is shared across groups; housekeeping prunes it by row count.
+
+    Args:
+        conn: Database connection
+        group_id: Consumer group ID to remove
+    """
+    conn.execute(
+        "DELETE FROM consumer_commits WHERE group_id = ?",
+        (group_id,),
+    )
+    conn.execute(
+        "DELETE FROM group_status WHERE group_id = ?",
+        (group_id,),
+    )
+    # Note: caller is responsible for committing the transaction

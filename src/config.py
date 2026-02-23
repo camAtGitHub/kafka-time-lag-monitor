@@ -33,6 +33,7 @@ class MonitoringConfig:
     offline_detection_consecutive_samples: int
     recovering_minimum_duration_seconds: int
     online_lag_threshold_seconds: int
+    absent_group_retention_seconds: int = 604800  # 7 days
 
 
 @dataclass
@@ -227,7 +228,17 @@ def load_config(path: str) -> Config:
     _validate_type(
         online_lag_threshold_seconds, int, "monitoring.online_lag_threshold_seconds"
     )
-    
+
+    absent_group_retention_seconds = _get_nested(
+        monitoring_data,
+        "absent_group_retention_seconds",
+        required=False,
+        default=604800,
+    )
+    _validate_type(
+        absent_group_retention_seconds, int, "monitoring.absent_group_retention_seconds"
+    )
+
     monitoring = MonitoringConfig(
         sample_interval_seconds=sample_interval_seconds,
         offline_sample_interval_seconds=offline_sample_interval_seconds,
@@ -237,7 +248,8 @@ def load_config(path: str) -> Config:
         max_commit_entries_per_partition=max_commit_entries_per_partition,
         offline_detection_consecutive_samples=offline_detection_consecutive_samples,
         recovering_minimum_duration_seconds=recovering_minimum_duration_seconds,
-        online_lag_threshold_seconds=online_lag_threshold_seconds
+        online_lag_threshold_seconds=online_lag_threshold_seconds,
+        absent_group_retention_seconds=absent_group_retention_seconds,
     )
     
     # Database configuration

@@ -195,3 +195,27 @@ class StateManager:
         """
         with self._lock:
             return copy.deepcopy(self._state["last_json_output"])
+
+    def remove_group(self, group_id: str) -> None:
+        """Remove all in-memory state for a consumer group.
+
+        Called when a ghost group is retired from the database. Clears all
+        (group_id, topic) keys from the in-memory status dict so the group
+        is no longer iterated over or written by persist_group_statuses.
+
+        Args:
+            group_id: Consumer group ID to remove
+        """
+        with self._lock:
+            keys_to_remove = [
+                key for key in self._state["group_statuses"] if key[0] == group_id
+            ]
+            for key in keys_to_remove:
+                del self._state["group_statuses"][key]
+            if keys_to_remove:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.debug(
+                    f"Removed in-memory state for retired group {group_id} "
+                    f"({len(keys_to_remove)} topic(s))"
+                )
