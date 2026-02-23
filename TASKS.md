@@ -1,131 +1,335 @@
 ---
-# MISSION
-You are a Sparse Priming Representation (SPR) decompressor. An SPR is a particular kind of use of language for advanced NLP, NLU, and NLG tasks, particularly useful for the latest generation Large Language Models (LLMs). Each task list below is written in SPR format. You must fully unpack your task before starting it!
 
-# THEORY
-LLMs are a kind of deep neural network. They have been demonstrated to embed knowledge, abilities, and concepts, ranging from reasoning to planning, and even to theory of mind. These are called latent abilities and latent content, collectively referred to as latent space. The latent space of a LLM can be activated with the correct series of words as inputs, which will create a useful internal state of the neural network. This is not unlike how the right shorthand cues can prime a human mind to think in a certain way. Like human minds, LLMs are associative, meaning you only need to use the correct associations to "prime" another model to think in the same way.
+# Fix to be implemented. RE: `_handle_idle_group` Log Storm + Ghost Group Retirement
 
-# METHODOLOGY
-Use the primings given to you to fully unpack and articulate the concept. Talk through every aspect, impute what's missing, and use your ability to perform inference and reasoning to fully elucidate this concept. Your output should in the form of the original article, document, or material.
+## Context and Scope
 
----
+Two distinct problems, one coherent solution:
 
-### 🔴 HIGH — TASK 32: `partition_offsets` stale for idle group topics — lag permanently reports 0
+1. **Log storm** — `_handle_idle_group` logs WARNING and writes DB every cycle for groups that are already OFFLINE. Fix: only act on state transitions, not on steady-state OFFLINE.
 
-**Files:** `sampler.py`
+2. **Ghost group accumulation** — Groups completely absent from Kafka (not in `list_consumer_groups` at all) accumulate in the DB forever with no cleanup path. Fix: retire them after a configurable retention period once they have been OFFLINE long enough.
 
-**Bug:** `all_topic_partitions` built only from active group partitions. Idle group contributes empty set → its topics excluded from `get_latest_produced_offsets` → `partition_offsets` frozen at pre-stop high watermark. Reporter: `committed_offset >= newest_offset` → `(0, "current")` always. Group correctly OFFLINE in status; lag permanently 0. Sole-consumer topic case: never heals. Shared-topic case: heals only if high watermark advances AND another active group triggers the write. Symptom masked until messages flow post-restart.
-
-**Expected outcome:** Post-restart `partition_offsets` advances for all historically-tracked topics regardless of group activity state. Lag = `T_now - T_offset_write` → correct outage duration visible from first reporter cycle. Fix anchor: after building `all_topic_partitions` from active groups, augment with idle groups' historical partitions sourced from `consumer_commits` via existing `get_group_tracked_topics` + `_get_partitions_for_topic`. These feed into same `get_latest_produced_offsets` bulk call → write path unchanged.
-
-**Notes:** `_handle_idle_group` already calls `get_group_tracked_topics` — reuse pattern. `_get_partitions_for_topic` queries `DISTINCT partition FROM consumer_commits` — already exists. No new DB functions needed. The fix is purely additive to the `all_topic_partitions` set construction before the Kafka call. Only idle groups (empty partition assignment) need augmentation; active groups self-populate.
+Groups that *are* in Kafka but have no active members (e.g. `cambo` — `Empty` state, shows in `--describe`) are intentionally *not* retired, because an admin may have left them registered deliberately. They benefit from fix 1 (log storm) but not fix 2 (retirement). Retirement is scoped only to groups in `idle_groups_with_history` — the set of groups that do not appear in `get_active_consumer_groups()` at all.
 
 ---
 
-### 🔴 HIGH — TASK 33: `_evaluate_state_machine` — sparse history → false `any_advancing=True`
+## Files Modified
 
-**Files:** `sampler.py`
-
-**Bug:** `len(recent_commits) < threshold` branch sets both `all_static_with_lag = False` AND `any_advancing = True`. Semantic conflation: "insufficient data" ≠ "consumer advancing". At startup or first appearance of a partition, genuinely OFFLINE group triggers RECOVERING transition. False positive before a single offset commit is observed. State machine corrupted at the moment it matters most — post-restart of monitor mid-outage.
-
-**Expected outcome:** Insufficient history = unknown, not advancing. `all_static_with_lag = False` only; `any_advancing` remains False. Group holds current status until threshold rows accumulate. No spurious RECOVERING emission. State machine is conservative: requires positive evidence of advancement, not absence of evidence of stasis.
-
-**Notes:** The `break` after the flag set is correct (early exit) — only the `any_advancing = True` assignment is wrong. One-line fix. Interacts with TASK 32: both affect post-restart correctness for OFFLINE groups. Fix 33 before or alongside 32.
+- `src/config.py` — add `absent_group_retention_seconds` config field
+- `src/database.py` — add `delete_group_data()`
+- `src/state_manager.py` — add `remove_group()`
+- `src/sampler.py` — rewrite `_handle_idle_group()`, add `_retire_ghost_groups()`
+- `config.yaml` and `test_config.yaml` — add new config key
 
 ---
 
-###  MEDIUM — TASK 34: `_handle_idle_group` stamps `last_advancing_at = current_time` on OFFLINE transition
+## 1. Config — `src/config.py`
 
-**Files:** `sampler.py`
+### Dataclass
 
-**Bug:** `set_group_status(..., current_time, current_time, ...)` — second `current_time` is `last_advancing_at`. Group has no active partitions; it has not advanced. Timestamp set to now corrupts advancing-history. Downstream: `time_in_recovering` calculation (`current_time - status_changed_at`) unaffected, but `last_advancing_at` semantics violated — it now reads "last advanced NOW" for a group that is idle. Future logic consumers of `last_advancing_at` receive false signal.
+In the `MonitoringConfig` dataclass, add one field after the existing integer fields:
 
-**Expected outcome:** `last_advancing_at` preserved from existing DB state when forcing OFFLINE. Retrieve existing status via `get_group_status` before overwrite; pass through stored `last_advancing_at` value. If no prior state exists, use `0` (sentinel: never advanced). Semantics: "last known good advancement time" must be monotonically non-increasing from the perspective of an idle group.
+```python
+absent_group_retention_seconds: int = 604800  # 7 days
+```
 
-**Notes:** `_handle_idle_group` already calls `get_group_tracked_topics` — can retrieve existing status in the same pass. Alternatively pass `last_advancing_at=0` as conservative sentinel; both are more correct than `current_time`.
+### Parsing
 
----
+In the `load_config()` function, in the monitoring section block alongside the other `_get_nested` calls, add:
 
-###  MEDIUM — TASK 35: Per-row `conn.commit()` in sampler write path — excessive fsync overhead
+```python
+absent_group_retention_seconds = _get_nested(
+    monitoring_data,
+    "absent_group_retention_seconds",
+    required=False,
+    default=604800,
+)
+_validate_type(
+    absent_group_retention_seconds, int, "monitoring.absent_group_retention_seconds"
+)
+```
 
-**Files:** `database.py`
+In the `MonitoringConfig(...)` constructor call, add:
 
-**Bug:** `insert_partition_offset` and `insert_consumer_commit` each call `conn.commit()` after every insert. N groups × P partitions = 2NP commits per cycle. At 10 groups × 20 partitions = 400 fsync-equivalent operations per 30s cycle. SQLite WAL: each commit flushes WAL. Cumulative I/O cost grows linearly with topology. Under disk pressure, commit latency compounds — sampler cycle overruns its interval, sleep becomes 0, busy-loop risk.
-
-**Expected outcome:** Batch all writes within a single sampler cycle into one transaction. Natural boundary exists: the cycle itself. Callers accumulate inserts; single `commit()` at cycle end. Alternatively: remove `commit()` from individual insert functions; caller responsible for transaction lifecycle. Throughput improvement proportional to NP; latency profile flattened.
-
-**Notes:** Reporter and housekeeping write patterns are less hot — lower priority to batch those. WAL + batch commit = optimal SQLite write pattern for this workload. The existing per-connection thread isolation (TASK 24 fix) makes batching safe — no cross-thread transaction interference.
-
----
-
-###  MEDIUM — TASK 36: `StateManager.set_group_status` holds RLock across synchronous DB write
-
-**Files:** `state_manager.py`
-
-**Bug:** `with self._lock:` wraps both in-memory dict update AND `database.upsert_group_status()`. I/O inside a mutex. Any reader thread (reporter calling `get_group_status`, `get_last_json_output`) blocks for the full duration of the SQLite write. Under disk pressure or housekeeping vacuum contention on a separate connection, write latency spikes → reporter stalls → JSON output gaps. RLock is re-entrant but doesn't help here; contention is cross-thread.
-
-**Expected outcome:** Lock scope reduced to memory mutation only. Pattern: acquire lock → copy state → release lock → perform DB write outside lock. In-memory state is authoritative; DB is persistence layer. Readers unblocked immediately after memory update. DB write serialized implicitly by single-threaded caller (sampler owns its connection). Correctness preserved: memory and DB may transiently diverge by one write, acceptable — DB is loaded only at startup.
-
-**Notes:** Reporter reads `last_json_output` under lock too — same contention point. All `get_*` methods acquire lock; any sampler write that holds lock while doing I/O blocks them. Minimize critical section to dict operations only: fast, in-memory, microseconds vs milliseconds.
+```python
+absent_group_retention_seconds=absent_group_retention_seconds,
+```
 
 ---
 
-###  LOW — TASK 37: `_get_partitions_for_topic` — redundant DB query, data already in scope
+## 2. Database — `src/database.py`
 
-**Files:** `sampler.py`
+Add this new function. Place it near the other group-related functions (after `get_group_tracked_topics` or similar):
 
-**Bug:** `_evaluate_state_machine` calls `_get_partitions_for_topic` which queries `DISTINCT partition FROM consumer_commits`. `_process_group` already built `topic_partitions_for_group: Dict[str, List[int]]` from Kafka-returned committed offsets in the same cycle. Same information, two sources, one already in memory. Extra DB round-trip per topic per cycle. At scale: N groups × T topics = NT unnecessary queries per cycle.
+```python
+def delete_group_data(conn: sqlite3.Connection, group_id: str) -> None:
+    """Delete all database records for a consumer group.
 
-**Expected outcome:** Pass `topic_partitions_for_group` (or the relevant `List[int]` slice) into `_evaluate_state_machine` as a parameter. Eliminates DB query entirely for the hot path. `_get_partitions_for_topic` method may remain for other callers (TASK 32 augmentation path uses it legitimately) but should not be called from within a cycle where the data is already available in memory.
+    Removes rows from consumer_commits and group_status for the given group.
+    Does NOT touch partition_offsets — that table is keyed by topic/partition
+    only and is shared across groups; housekeeping prunes it by row count.
 
-**Notes:** `_get_partitions_for_topic` queries consumer_commits — returns historical partitions. In-cycle `topic_partitions_for_group` contains only current-cycle partitions from Kafka. Semantically equivalent in steady state; may differ if a partition appears in history but not current Kafka response. Decide: use in-memory (current) or DB (historical) as ground truth for state machine evaluation. Current/Kafka is correct for active evaluation.
+    Args:
+        conn: Database connection
+        group_id: Consumer group ID to remove
+    """
+    conn.execute(
+        "DELETE FROM consumer_commits WHERE group_id = ?",
+        (group_id,),
+    )
+    conn.execute(
+        "DELETE FROM group_status WHERE group_id = ?",
+        (group_id,),
+    )
+    # Note: caller is responsible for committing the transaction
+```
 
----
-
-###  LOW — TASK 38: `init_db` return value discarded — misleading lifecycle, resource untidiness
-
-**Files:** `main.py`, `database.py`
-
-**Bug:** `database.init_db(cfg.database.path)` called for side effect (schema creation) but returns a `sqlite3.Connection` that is immediately GC'd. Misleading: function signature implies caller owns the connection. GC handles cleanup but timing is non-deterministic. Readers of `main.py` see a call that looks like it should be stored. Conceptual noise in startup sequence.
-
-**Expected outcome:** Two valid resolutions: (A) rename to `init_db_schema()`, return `None`, make intent explicit; or (B) explicitly close the returned connection `conn.close()` at call site. Option A preferred — removes false affordance, aligns name with behaviour. Schema init is a one-shot operation; connection is not needed afterward.
-
-**Notes:** `init_db` creates connection via `_create_connection` which sets PRAGMAs including `auto_vacuum=INCREMENTAL` — these are per-connection PRAGMAs but `auto_vacuum` mode is a database-file property set at creation time. Subsequent connections inherit it. So the throwaway connection is correctly doing real work — just needs honest naming.
-
----
-
-###  LOW — TASK 39: `get_topic_partition_count` dead code
-
-**Files:** `kafka_client.py`
-
-**Bug:** Function defined, documented, never called. No reference in sampler, reporter, main, housekeeping, or any test. Violates "all kafka calls isolated here" design principle by adding surface area that isn't exercised or tested. Dead code accumulates entropy: future refactors must consider it, future readers must wonder about its purpose.
-
-**Expected outcome:** Remove function entirely. If partition-count metadata becomes needed in future, reintroduce with a caller. Alternatively: if function is intentionally reserved for planned feature, add a comment stating as much. Silence is ambiguous; intent should be explicit.
-
-**Notes:** No test coverage exists for this function — safe to delete without test changes. Check git log for any branch that references it before removal.
+No `conn.commit()` inside — the sampler calls `commit_batch()` at the end of the cycle, consistent with the rest of the write path.
 
 ---
 
-###  LOW — TASK 40: No range validation on monitoring config integer values
+## 3. StateManager — `src/state_manager.py`
 
-**Files:** `config.py`
+Add this method to the `StateManager` class:
 
-**Bug:** Type validation present for all monitoring fields; value range validation absent. `sample_interval_seconds: 0` passes loading → sampler sleep = 0 → busy-loop at full CPU. `offline_detection_consecutive_samples: 0` → threshold never reachable or immediately triggered depending on comparison. `max_entries_per_partition: 0` → housekeeping deletes all rows → interpolation collapses. Misconfiguration silent until runtime damage.
+```python
+def remove_group(self, group_id: str) -> None:
+    """Remove all in-memory state for a consumer group.
 
-**Expected outcome:** Post-type-validation range checks: all interval fields `>= 1`; all count/threshold fields `>= 1`; `offline_sample_interval_seconds >= sample_interval_seconds` (coarse must be coarser than fine). Raise `ConfigError` with field name and constraint on violation. Fail fast at startup, not silently at runtime. Pattern consistent with existing `_validate_type` helper — add `_validate_range(value, min, field_name)` companion.
+    Called when a ghost group is retired from the database. Clears all
+    (group_id, topic) keys from the in-memory status dict so the group
+    is no longer iterated over or written by persist_group_statuses.
 
-**Notes:** `online_lag_threshold_seconds` should also be `>= 0` (0 = lag-free threshold, valid). `recovering_minimum_duration_seconds` can be `0` (no minimum, valid). Consider upper bounds only if operationally meaningful (e.g. sample interval > 3600 is almost certainly a config error). Conservative approach: lower bounds only.
+    Args:
+        group_id: Consumer group ID to remove
+    """
+    with self._lock:
+        keys_to_remove = [
+            key for key in self._group_statuses if key[0] == group_id
+        ]
+        for key in keys_to_remove:
+            del self._group_statuses[key]
+        if keys_to_remove:
+            logger.debug(
+                f"Removed in-memory state for retired group {group_id} "
+                f"({len(keys_to_remove)} topic(s))"
+            )
+```
 
 ---
 
-### ℹ️ NOTE — TASK 41: Garbled docstring `has_group_history`
+## 4. Sampler — `src/sampler.py`
 
-**Files:** `database.py`
+### 4a. Rewrite `_handle_idle_group`
 
-**Bug:** Docstring reads: `"Check if history in the database a group has any."` — word order scrambled, unparseable as English. Minor but `database.py` is a shared utility module; docstring quality matters for maintainability.
+Replace the entire existing method body. The new version checks current status before acting and only logs/writes on a genuine state transition:
 
-**Expected outcome:** `"Check if a group has any history in the database."` One-line fix.
+```python
+def _handle_idle_group(self, group_id: str, cycle_start: float) -> None:
+    """Handle a group with no active partitions.
 
-**Notes:** No logic change. Lint/docstring check in CI would catch this class of issue automatically.
+    Checks current state for each tracked topic. Only logs WARNING and
+    writes OFFLINE status on the first cycle the group is detected as idle
+    (i.e. a genuine state transition). Subsequent cycles where the group
+    is already OFFLINE produce a DEBUG log only — no DB write.
+
+    Args:
+        group_id: The consumer group ID
+        cycle_start: Timestamp when the cycle started
+    """
+    has_history = database.has_group_history(self._db_conn, group_id)
+
+    if not has_history:
+        logger.debug(f"No partitions assigned to group {group_id}")
+        return
+
+    tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
+    current_time = int(cycle_start)
+
+    for topic in tracked_topics:
+        existing_status = self._state_manager.get_group_status(group_id, topic)
+        current_status = existing_status.get("status", "ONLINE")
+        last_advancing_at = existing_status.get("last_advancing_at", 0)
+
+        if current_status == "OFFLINE":
+            # Already OFFLINE from a previous cycle — steady state, no action needed.
+            # Retirement (if applicable) is handled separately by _retire_ghost_groups.
+            logger.debug(
+                f"Group {group_id}/{topic} remains OFFLINE (no active partitions)"
+            )
+            continue
+
+        # This is a genuine transition: group was ONLINE or RECOVERING and has
+        # now lost all partitions. Log once and write the status change.
+        logger.warning(
+            f"Group {group_id} has no active partitions but has DB history "
+            f"for topic '{topic}'. Transitioning {current_status} -> OFFLINE."
+        )
+        self._state_manager.set_group_status(
+            group_id,
+            topic,
+            "OFFLINE",
+            current_time,
+            last_advancing_at,
+            self._config.monitoring.offline_detection_consecutive_samples,
+        )
+```
+
+**Key behavioural changes from current:**
+- Per-topic iteration with individual status checks (current code does one WARNING for all topics combined, then writes all — new code logs the transition per topic, which is more precise and consistent with how the state machine works everywhere else)
+- Already-OFFLINE topics: no WARNING, no DB write, DEBUG only
+- Transitioning topics: WARNING once, write once
+
+### 4b. Add `_retire_ghost_groups`
+
+Add this new method to the `Sampler` class:
+
+```python
+def _retire_ghost_groups(
+    self, idle_groups_with_history: set, cycle_start: float
+) -> None:
+    """Retire groups that are absent from Kafka and have been OFFLINE long enough.
+
+    Only called for groups in idle_groups_with_history — the set of groups
+    that do not appear in get_active_consumer_groups() at all. Groups that
+    ARE in Kafka (even with no active members / Empty state) are not retired
+    here; their lifecycle is managed by the Kafka administrator.
+
+    A group is retired when ALL of the following are true:
+      - It is absent from Kafka entirely (in idle_groups_with_history)
+      - Every tracked topic for the group has status OFFLINE
+      - The earliest status_changed_at across all topics is older than
+        absent_group_retention_seconds
+
+    On retirement:
+      - All consumer_commits rows for the group are deleted
+      - All group_status rows for the group are deleted
+      - In-memory state is cleared via state_manager.remove_group()
+      - An INFO log is emitted with the group ID and how long it was OFFLINE
+
+    partition_offsets is NOT cleaned up here — it is keyed by topic/partition
+    only and shared across groups. Housekeeping prunes it by row count naturally.
+
+    Args:
+        idle_groups_with_history: Set of group IDs absent from Kafka but with
+                                  historical data in the database
+        cycle_start: Timestamp when the cycle started
+    """
+    retention = self._config.monitoring.absent_group_retention_seconds
+    current_time = int(cycle_start)
+
+    for group_id in idle_groups_with_history:
+        tracked_topics = database.get_group_tracked_topics(
+            self._db_conn, group_id
+        )
+
+        if not tracked_topics:
+            continue
+
+        # All topics must be OFFLINE, and we find the earliest OFFLINE timestamp
+        should_retire = True
+        earliest_offline_at = current_time
+
+        for topic in tracked_topics:
+            status = self._state_manager.get_group_status(group_id, topic)
+
+            if status.get("status") != "OFFLINE":
+                # Group has a topic not yet OFFLINE — not ready for retirement.
+                # This can happen on the same cycle _handle_idle_group transitions
+                # it, since retirement runs after idle handling.
+                should_retire = False
+                break
+
+            topic_offline_since = status.get("status_changed_at", current_time)
+            earliest_offline_at = min(earliest_offline_at, topic_offline_since)
+
+        if not should_retire:
+            continue
+
+        time_offline_seconds = current_time - earliest_offline_at
+
+        if time_offline_seconds < retention:
+            logger.debug(
+                f"Ghost group {group_id} has been OFFLINE for "
+                f"{time_offline_seconds // 3600:.1f}h — "
+                f"retention period is {retention // 3600:.1f}h, not retiring yet."
+            )
+            continue
+
+        # Retention period exceeded — retire the group
+        logger.info(
+            f"Retiring ghost group '{group_id}': absent from Kafka, "
+            f"OFFLINE for {time_offline_seconds // 3600:.1f}h "
+            f"(retention threshold: {retention // 3600:.1f}h). "
+            f"Removing from database. Topics were: {tracked_topics}"
+        )
+
+        database.delete_group_data(self._db_conn, group_id)
+        self._state_manager.remove_group(group_id)
+```
+
+### 4c. Wire `_retire_ghost_groups` into the run loop
+
+In `run()`, after the existing Step 3c block, add Step 3d immediately after:
+
+```python
+                # Step 3c: Mark idle groups as OFFLINE (transition only — no repeat writes)
+                for group_id in idle_groups_with_history:
+                    self._handle_idle_group(group_id, cycle_start)
+
+                # Step 3d: Retire ghost groups (absent from Kafka past retention period)
+                self._retire_ghost_groups(idle_groups_with_history, cycle_start)
+```
+
+No other changes to the run loop are needed.
 
 ---
+
+## 5. Config Files
+
+### `config.yaml`
+
+Add under the `monitoring:` block, alongside the other interval settings:
+
+```yaml
+monitoring:
+  # ... existing fields ...
+  absent_group_retention_seconds: 604800   # 7 days. Ghost groups (absent from Kafka entirely)
+                                            # are removed from the database after being OFFLINE
+                                            # for this long. Set to 0 to disable retirement.
+```
+
+### `test_config.yaml`
+
+Add the same key with a short value suitable for tests:
+
+```yaml
+monitoring:
+  # ... existing fields ...
+  absent_group_retention_seconds: 3600    # 1 hour for test config
+```
+
+---
+
+## Interaction Between the Two Fixes
+
+The two fixes are designed to chain correctly within a single cycle:
+
+1. **Step 3c** calls `_handle_idle_group` for every group in `idle_groups_with_history`. For a brand-new ghost group, this transitions it to OFFLINE and logs WARNING. For an already-OFFLINE group, it logs DEBUG and does nothing.
+
+2. **Step 3d** calls `_retire_ghost_groups` for the same set. For a group that was *just* transitioned to OFFLINE in 3c, `status_changed_at` is set to `current_time`, so `time_offline_seconds` will be ~0 and it will not be retired this cycle. The INFO log explaining retirement doesn't fire until the retention period has elapsed in a future cycle. There is no race.
+
+3. Once `delete_group_data` and `remove_group` are called, the group disappears from `consumer_commits` and `group_status`. On the next cycle, `get_all_groups_with_history` will no longer return it (since that queries `consumer_commits`), so it won't appear in `idle_groups_with_history` and neither `_handle_idle_group` nor `_retire_ghost_groups` will be called for it again. Clean exit.
+
+---
+
+## Behaviour Summary After Fix
+
+| Scenario | Before fix | After fix |
+|---|---|---|
+| Group transitions to OFFLINE (first idle cycle) | WARNING + DB write | WARNING + DB write (unchanged) |
+| Group already OFFLINE, subsequent cycles | WARNING + DB write every 30s | DEBUG only, no DB write |
+| Ghost group absent from Kafka < retention period | WARNING every 30s, forever | DEBUG only |
+| Ghost group absent from Kafka ≥ retention period | WARNING every 30s, forever | INFO once, then deleted from DB — gone |
+| Group in Kafka, Empty state (e.g. `cambo`) | WARNING every 30s | DEBUG only after first transition |
