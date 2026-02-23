@@ -38,6 +38,7 @@ Owns the single shared in-memory state dictionary used for communication between
 - `get_thread_last_run(thread_name) -> int`
 - `set_last_json_output(output_dict)`
 - `get_last_json_output() -> dict`
+- `remove_group(group_id)` — remove all in-memory state for a consumer group. Called when a ghost group is retired from the database. Does not affect the database; that's handled separately by `delete_group_data()`.
 
 ### Transaction Model
 

@@ -99,5 +99,9 @@ Primary key: `(group_id, topic)`
 - `get_all_partition_keys(conn) -> list[tuple[str, int]]` — distinct `(topic, partition)` pairs
 - `get_all_commit_keys(conn) -> list[tuple[str, str, int]]` — distinct `(group_id, topic, partition)` triples
 - `run_incremental_vacuum(conn, pages=100)`
+- `has_group_history(conn, group_id) -> bool` — check if a group has any commit history
+- `get_group_tracked_topics(conn, group_id) -> list[str]` — get all topics a group has consumed
+- `get_all_groups_with_history(conn) -> list[str]` — get all group IDs with commit history
+- `delete_group_data(conn, group_id)` — delete all `consumer_commits` and `group_status` rows for a group. Does not touch `partition_offsets` (shared across groups). Does not commit; caller must commit.
 
 ---
