@@ -43,58 +43,59 @@ def verify_kafka_connectivity(
     retry_interval: int = 10
 ) -> bool:
     """Verify Kafka connectivity at startup.
-    
+
     Args:
         kafka_client_module: The kafka_client module
         config: Configuration object
         timeout_seconds: Maximum time to wait for connectivity
         retry_interval: Seconds between retries
-        
+
     Returns:
         True if connected successfully
-        
+
     Raises:
         RuntimeError: If connection cannot be established within timeout
     """
     admin_client = kafka_client.build_admin_client(config)
     start_time = time.time()
     last_error = None
-    
-    while time.time() - start_time < timeout_seconds:
-        try:
-            groups = kafka_client.get_active_consumer_groups(admin_client)
-            logger.info(f"Kafka connectivity verified: {len(groups)} consumer groups found")
-            return True
-        except Exception as e:
-            last_error = e
-            logger.warning(f"Kafka connectivity check failed: {e}. Retrying in {retry_interval}s...")
-            time.sleep(retry_interval)
-    
-    raise RuntimeError(
-        f"Failed to connect to Kafka after {timeout_seconds}s: {last_error}"
-    )
+
+    try:
+        while time.time() - start_time < timeout_seconds:
+            try:
+                groups = kafka_client.get_active_consumer_groups(admin_client)
+                logger.info(f"Kafka connectivity verified: {len(groups)} consumer groups found")
+                return True
+            except Exception as e:
+                last_error = e
+                logger.warning(f"Kafka connectivity check failed: {e}. Retrying in {retry_interval}s...")
+                time.sleep(retry_interval)
+
+        raise RuntimeError(
+            f"Failed to connect to Kafka after {timeout_seconds}s: {last_error}"
+        )
+    finally:
+        admin_client = None  # AdminClient doesn't have explicit close method
 
 
 def run_with_restart(
     target_func: Any,
     shutdown_event: threading.Event,
-    thread_name: str,
-    *args: Any
+    thread_name: str
 ) -> None:
     """Run a function with automatic restart on exception.
-    
+
     Catches any unhandled exception, logs it, waits 30 seconds (checking
     shutdown_event during wait), then restarts the function.
-    
+
     Args:
         target_func: The function to run
         shutdown_event: Event to signal shutdown
         thread_name: Name of the thread for logging
-        *args: Arguments to pass to the function
     """
     while not shutdown_event.is_set():
         try:
-            target_func(*args)
+            target_func(shutdown_event)
         except Exception:
             logger.exception(f"Unhandled exception in {thread_name}, waiting to restart...")
             
@@ -180,23 +181,23 @@ def main() -> int:
     
     sampler_thread = threading.Thread(
         target=run_with_restart,
-        args=(sampler_instance.run, shutdown_event, "sampler", shutdown_event),
+        args=(sampler_instance.run, shutdown_event, "sampler"),
         name="sampler",
         daemon=True
     )
     threads.append(sampler_thread)
-    
+
     reporter_thread = threading.Thread(
         target=run_with_restart,
-        args=(reporter_instance.run, shutdown_event, "reporter", shutdown_event),
+        args=(reporter_instance.run, shutdown_event, "reporter"),
         name="reporter",
         daemon=True
     )
     threads.append(reporter_thread)
-    
+
     housekeeping_thread = threading.Thread(
         target=run_with_restart,
-        args=(housekeeping_instance.run, shutdown_event, "housekeeping", shutdown_event),
+        args=(housekeeping_instance.run, shutdown_event, "housekeeping"),
         name="housekeeping",
         daemon=True
     )
