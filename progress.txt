@@ -57,9 +57,20 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
 ---
 ## Progress updates
 
-## 2026-02-22 18:03 - TASK 32, 33, 34 - Sampler fixes
+## TASK 32 — INCOMPLETE: partition_offsets stale for sole-consumer idle groups
+Status: Partially fixed. The shared-topic case is resolved. The sole-consumer case is not.
+The fix correctly augments all_topic_partitions with idle groups' historical partitions, ensuring get_latest_produced_offsets fetches a fresh high-watermark for those partitions. This is the right first step.
+The gap: _write_partition_offset_if_needed is only called from inside _process_group, which only iterates over active_groups. When apple is the sole consumer of test/0, no active group processes that partition — so latest_offsets[("test", 0)] is fetched correctly but immediately discarded. Nobody writes it to partition_offsets. The table remains frozen at the pre-stop value. The reporter still sees committed_offset >= newest_stored_offset and returns (0, "current").
+The fix works in the shared-topic case only: if banana or cat also consume test/0, their _process_group execution will call _write_partition_offset_if_needed("test", 0, ...) and the fresh offset is persisted. But apple as sole consumer — the exact scenario you reported — is still broken.
+How to fix:
+The augmentation block already knows precisely which partitions belong to idle groups — it built that set iteratively. The fix needs to track those idle-group partitions separately (not just merge them into all_topic_partitions) so that after get_latest_produced_offsets returns, a dedicated write-pass can be made for them.
+Conceptually, the run loop needs a second set — call it idle_topic_partitions — populated during the augmentation loop instead of merging into all_topic_partitions directly. Both sets are merged for the Kafka fetch (so the bulk call is unchanged), but after latest_offsets comes back, the code iterates idle_topic_partitions and calls _write_partition_offset_if_needed for each one using the fetched offset from latest_offsets. This write pass sits between Step 3 and Step 4 (before the active-group processing loop), and its writes are covered by the existing commit_batch at the end of the cycle.
+_write_partition_offset_if_needed already has all the right cadence logic — "write if offset changed, or if coarse interval elapsed" — so it is the correct method to reuse here. No new DB functions are needed. The key insight is simply that the write responsibility for idle-group partitions cannot live inside _process_group (which is active-group-only by design) and must instead be an explicit step in the run loop.
+---
+
+
+## 2026-02-22 18:03 - TASK 33, 34 - Sampler fixes
 - TASK 33: Fixed _evaluate_state_machine to not set any_advancing=True when history is sparse (insufficient data != advancing). This was causing false RECOVERING transitions.
-- TASK 32: Added augmentation of all_topic_partitions with idle groups' historical partitions from consumer_commits to keep partition_offsets fresh for idle groups
 - TASK 34: Fixed _handle_idle_group to preserve last_advancing_at from existing DB state instead of setting to current_time when marking groups as OFFLINE
 - Files changed: src/database.py, src/sampler.py, src/tests/test_database.py, src/tests/test_sampler.py
 - **Learnings for future iterations:**
@@ -80,11 +91,13 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
   - WAL mode should allow visibility across connections, but explicit commit is still needed for durability
 ---
 
-## 2026-02-22 20:00 - TASK 36 - StateManager lock scope reduction
-- Reduced lock scope in set_group_status: lock now only protects in-memory dict update, DB write happens outside lock
-- Fixed thread-safety by creating new DB connection per write operation instead of sharing StateManager's connection
-- Files changed: src/state_manager.py
-- **Learnings for future iterations:**
-  - Moving DB I/O outside locks can expose pre-existing threading bugs - test with concurrent access
-  - SQLite connections are not thread-safe; create new connection per operation for concurrent access
-  - The original code serialized DB writes via the lock, masking the connection-sharing bug
+## TASK 36 - Introduces a new bug: connection-per-write is a resource leak and correctness risk
+Status: Lock scope reduced correctly. But the implementation is problematic.
+The lock scope fix is right — in-memory update under lock, DB write outside. However, the chosen approach creates a brand new sqlite3.Connection on every call to set_group_status, then closes it after the single write.
+Problem 1 — Connection churn: set_group_status is called once per group per topic per sampler cycle — potentially dozens of times per 30-second cycle. Each call opens a new file descriptor, then database.get_connection runs _create_connection, which executes and commits three PRAGMAs (auto_vacuum, journal_mode, synchronous) before the actual row write. That's two commits (PRAGMAs + row) and a close, per call, per cycle. For 10 groups × 5 topics that's 100 connection open/close operations and 200 commits every 30 seconds, just for status persistence.
+Problem 2 — self._db_conn is now a permanently open idle connection: It is created in __init__, used only in _load_group_statuses at startup, then never touched again. It holds a file descriptor and a WAL reader slot for the entire process lifetime. This is pure waste and will confuse any future debugging of connection counts.
+Problem 3 — The PRAGMA overhead is especially wasteful: journal_mode=WAL is a database-file property — once set it persists. Re-asserting it on every throwaway connection is redundant. Same with auto_vacuum=INCREMENTAL. These PRAGMAs are correct to set on a long-lived connection at startup; they are noise on a write-and-discard connection.
+How to fix:
+The original self._db_conn should be retained and repurposed as the persistent write connection for set_group_status. The correct fix is structurally simple: move the upsert_group_status call to execute on self._db_conn but after the with self._lock block closes. The lock guards only the in-memory dict mutation — a pure Python operation that takes microseconds. The DB write then happens outside the lock on the already-open, already-configured persistent connection.
+This is safe because set_group_status is only called from two places: the sampler thread (via _evaluate_state_machine and _handle_idle_group) and — in theory — any future caller. Both write paths go through the same StateManager instance. The sampler is single-threaded within its own loop, so there is no concurrent access to self._db_conn from within StateManager's write path. The reporter only calls get_group_status and get_last_json_output, which read in-memory state under the lock and never touch any DB connection on StateManager.
+The one-line docstring that says "Updates both in-memory state and persists to database atomically within the same lock acquisition" will also need updating — that atomicity guarantee was already broken by the current implementation and should be removed from the contract description.

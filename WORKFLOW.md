@@ -1,8 +1,11 @@
 # AI Agent Instructions
 
 You are an autonomous coding agent working on a software project.
+
+<IF WORKING ON A GITHUB ISSUE OR TASKED WITH AN ASSIGNMENT FROM GITHUB THEN SKIP THE LINES BELOW:>
 This coding space has old version of git installed, so args will be different, and other old software versions.
 You MUST use `uv pip` instead of `pip` command. You MUST use `uv run python` instead of the python binary.
+</ENDIF>
 
 ## Your Task
 
@@ -79,12 +82,15 @@ Only update progress.txt if you have **genuinely reusable knowledge** that would
 - Keep changes focused and minimal
 - Follow existing code patterns
 
+
+<IF WORKING ON A GITHUB ISSUE OR TASKED WITH AN ASSIGNMENT FROM GITHUB THEN SKIP THE LINES BELOW:>
 ## Stop Condition
 
 If ALL stories are complete and passing, reply with:
 <promise>COMPLETE-ALL-FINISHED</promise>
 
 If there are still stories that are incomplete or not yet started, you MUST end your response normally. eg. STOP or EXIT (another iteration will pick up the next story).
+</ENDIF>
 
 ## Important
 
