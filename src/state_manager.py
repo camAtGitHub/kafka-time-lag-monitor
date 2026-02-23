@@ -6,6 +6,7 @@ synchronization.
 
 import copy
 import threading
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import database
@@ -68,10 +69,12 @@ class StateManager:
             if key in self._state["group_statuses"]:
                 return copy.deepcopy(self._state["group_statuses"][key])
             # Return default ONLINE state for unknown groups
+            # Use current time to avoid huge time delta calculations
+            current_time = int(time.time())
             return {
                 "status": "ONLINE",
-                "status_changed_at": 0,
-                "last_advancing_at": 0,
+                "status_changed_at": current_time,
+                "last_advancing_at": current_time,
                 "consecutive_static": 0
             }
     

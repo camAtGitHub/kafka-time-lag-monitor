@@ -271,7 +271,7 @@ class Sampler:
             if len(recent_commits) < threshold:
                 all_static_with_lag = False
                 any_advancing = True
-                break
+                continue
             
             offsets = [commit[0] for commit in recent_commits]
             committed = offsets[0] if offsets else 0
@@ -279,12 +279,12 @@ class Sampler:
             has_lag = committed < produced
             
             if len(set(offsets)) == 1 and has_lag:
+                # This partition is static with lag
                 pass
             else:
                 all_static_with_lag = False
                 if len(set(offsets)) != 1:
                     any_advancing = True
-                break
         
         current_time = int(cycle_start)
         new_status = current_status

@@ -432,9 +432,10 @@ def get_all_commit_keys(conn: sqlite3.Connection) -> List[Tuple[str, str, int]]:
 
 def run_incremental_vacuum(conn: sqlite3.Connection, pages: int = 100) -> None:
     """Run incremental vacuum to reclaim disk space.
-    
+
     Args:
         conn: Database connection
         pages: Number of pages to vacuum
     """
     conn.execute(f"PRAGMA incremental_vacuum({pages})")
+    conn.commit()

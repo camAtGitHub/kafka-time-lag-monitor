@@ -53,12 +53,14 @@ class TestStateManager:
         """Test that get_group_status returns default ONLINE state for unknown groups."""
         config = MockConfig()
         sm = StateManager(db_conn, config)
-        
+
         status = sm.get_group_status("unknown_group", "unknown_topic")
-        
+
         assert status["status"] == "ONLINE"
-        assert status["status_changed_at"] == 0
-        assert status["last_advancing_at"] == 0
+        # Changed: status_changed_at and last_advancing_at now use current time instead of 0
+        # to avoid huge time delta calculations (Bug #5 fix)
+        assert status["status_changed_at"] > 0
+        assert status["last_advancing_at"] > 0
         assert status["consecutive_static"] == 0
     
     def test_set_group_status_updates_in_memory(self, db_conn):
