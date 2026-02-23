@@ -37,6 +37,7 @@ class StateManager:
         self._db_conn = database.get_connection(db_path)
         self._config = config
         self._lock = threading.RLock()
+        self._db_write_lock = threading.Lock()  # Separate lock for DB writes
 
         # Initialize in-memory state structure
         self._state: Dict[str, Any] = {
@@ -93,8 +94,8 @@ class StateManager:
     ) -> None:
         """Set the status for a group/topic combination.
 
-        Updates both in-memory state and persists to database atomically
-        within the same lock acquisition.
+        Updates in-memory state under lock, then persists to database.
+        In-memory state is authoritative; database is the persistence layer.
 
         Args:
             group_id: Consumer group ID
@@ -115,10 +116,11 @@ class StateManager:
         with self._lock:
             self._state["group_statuses"][key] = status_dict
 
-        db_conn = database.get_connection(self._db_path)
-        try:
+        # Write to database outside memory lock using persistent connection
+        # DB write lock ensures thread-safe access to the connection
+        with self._db_write_lock:
             database.upsert_group_status(
-                db_conn,
+                self._db_conn,
                 group_id,
                 topic,
                 status,
@@ -126,8 +128,6 @@ class StateManager:
                 last_advancing_at,
                 consecutive_static,
             )
-        finally:
-            db_conn.close()
 
     def get_all_group_statuses(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         """Get a snapshot copy of all group statuses.
