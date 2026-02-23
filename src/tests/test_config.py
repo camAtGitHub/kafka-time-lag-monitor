@@ -55,6 +55,7 @@ def test_valid_config_loads_successfully(tmp_path):
     assert cfg.monitoring.offline_detection_consecutive_samples == 3
     assert cfg.monitoring.recovering_minimum_duration_seconds == 180
     assert cfg.monitoring.online_lag_threshold_seconds == 60
+    assert cfg.monitoring.absent_group_retention_seconds == 604800  # default
     assert cfg.database.path == "/var/lib/kafka-lag-monitor/lag.db"
     assert cfg.output.json_path == "/var/lib/kafka-lag-monitor/lag.json"
     assert cfg.exclude.topics == ["internal-topic"]
@@ -278,8 +279,71 @@ def test_invalid_yaml_raises_config_error(tmp_path):
     """Test that invalid YAML raises ConfigError."""
     config_file = tmp_path / "config.yaml"
     config_file.write_text("invalid: yaml: content:")
-    
+
     with pytest.raises(config.ConfigError) as exc_info:
         config.load_config(str(config_file))
-    
+
     assert "yaml" in str(exc_info.value).lower()
+
+
+def test_absent_group_retention_seconds_uses_default_when_missing(tmp_path):
+    """Test that absent_group_retention_seconds uses default value when missing."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+
+monitoring:
+  sample_interval_seconds: 60
+  offline_sample_interval_seconds: 1800
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: 180
+  online_lag_threshold_seconds: 60
+
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    cfg = config.load_config(str(config_file))
+
+    assert cfg.monitoring.absent_group_retention_seconds == 604800  # 7 days default
+
+
+def test_absent_group_retention_seconds_can_be_overridden(tmp_path):
+    """Test that absent_group_retention_seconds can be set to a custom value."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+
+monitoring:
+  sample_interval_seconds: 60
+  offline_sample_interval_seconds: 1800
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: 180
+  online_lag_threshold_seconds: 60
+  absent_group_retention_seconds: 3600
+
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    cfg = config.load_config(str(config_file))
+
+    assert cfg.monitoring.absent_group_retention_seconds == 3600

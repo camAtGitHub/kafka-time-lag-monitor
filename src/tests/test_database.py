@@ -422,3 +422,75 @@ class TestGroupHistory:
 
         groups = get_all_groups_with_history(db_conn)
         assert groups == []
+
+
+class TestDeleteGroupData:
+    """Tests for delete_group_data function."""
+
+    def test_delete_group_data_removes_consumer_commits(self, db_conn):
+        """Test delete_group_data removes all consumer_commits for a group."""
+        from database import delete_group_data, commit_batch
+
+        insert_consumer_commit(db_conn, "group-1", "topic1", 0, 100, 1234567890)
+        insert_consumer_commit(db_conn, "group-1", "topic2", 0, 200, 1234567890)
+        insert_consumer_commit(db_conn, "group-2", "topic1", 0, 300, 1234567890)
+
+        delete_group_data(db_conn, "group-1")
+        commit_batch(db_conn)
+
+        cursor = db_conn.execute(
+            "SELECT COUNT(*) FROM consumer_commits WHERE group_id = ?",
+            ("group-1",)
+        )
+        assert cursor.fetchone()[0] == 0
+
+        # group-2 should still exist
+        cursor = db_conn.execute(
+            "SELECT COUNT(*) FROM consumer_commits WHERE group_id = ?",
+            ("group-2",)
+        )
+        assert cursor.fetchone()[0] == 1
+
+    def test_delete_group_data_removes_group_status(self, db_conn):
+        """Test delete_group_data removes all group_status for a group."""
+        from database import delete_group_data, upsert_group_status, commit_batch
+
+        upsert_group_status(db_conn, "group-1", "topic1", "ONLINE", 1234567890, 1234567890, 0)
+        upsert_group_status(db_conn, "group-1", "topic2", "OFFLINE", 1234567890, 1234567890, 5)
+        upsert_group_status(db_conn, "group-2", "topic1", "ONLINE", 1234567890, 1234567890, 0)
+
+        delete_group_data(db_conn, "group-1")
+        commit_batch(db_conn)
+
+        cursor = db_conn.execute(
+            "SELECT COUNT(*) FROM group_status WHERE group_id = ?",
+            ("group-1",)
+        )
+        assert cursor.fetchone()[0] == 0
+
+        # group-2 should still exist
+        cursor = db_conn.execute(
+            "SELECT COUNT(*) FROM group_status WHERE group_id = ?",
+            ("group-2",)
+        )
+        assert cursor.fetchone()[0] == 1
+
+    def test_delete_group_data_does_not_affect_partition_offsets(self, db_conn):
+        """Test delete_group_data does not touch partition_offsets table."""
+        from database import delete_group_data, commit_batch
+
+        # Add consumer commits for context
+        insert_consumer_commit(db_conn, "group-1", "topic1", 0, 100, 1234567890)
+
+        # Add partition offsets (shared across groups)
+        insert_partition_offset(db_conn, "topic1", 0, 1000, 1234567890)
+
+        delete_group_data(db_conn, "group-1")
+        commit_batch(db_conn)
+
+        # partition_offsets should remain untouched
+        cursor = db_conn.execute(
+            "SELECT COUNT(*) FROM partition_offsets WHERE topic = ?",
+            ("topic1",)
+        )
+        assert cursor.fetchone()[0] == 1
