@@ -504,7 +504,7 @@ def get_group_tracked_topics(conn: sqlite3.Connection, group_id: str) -> List[st
 
 
 def has_group_history(conn: sqlite3.Connection, group_id: str) -> bool:
-    """Check if history in the database a group has any.
+    """Check if a group has any history in the database.
 
     Args:
         conn: Database connection
