@@ -35,6 +35,7 @@ class TestStateManager:
             database.upsert_group_status(
                 conn, "group1", "topic2", "RECOVERING", 3000, 2500, 2
             )
+            conn.commit()  # Commit the changes
         finally:
             conn.close()
 

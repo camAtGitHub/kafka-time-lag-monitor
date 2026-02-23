@@ -128,6 +128,9 @@ class StateManager:
                 last_advancing_at,
                 consecutive_static,
             )
+            # Commit immediately on StateManager's own connection
+            # This is safe because StateManager has its own connection separate from sampler
+            self._db_conn.commit()
 
     def get_all_group_statuses(self) -> Dict[Tuple[str, str], Dict[str, Any]]:
         """Get a snapshot copy of all group statuses.

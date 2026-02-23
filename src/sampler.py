@@ -92,12 +92,14 @@ class Sampler:
                 # Augment with idle groups' historical partitions
                 # Track idle partitions separately for write pass
                 idle_topic_partitions = set()
+                idle_groups_with_history = set()  # Track which groups are idle
                 all_group_ids_with_history = database.get_all_groups_with_history(
                     self._db_conn
                 )
                 active_group_set = set(active_groups)
                 for group_id in all_group_ids_with_history:
                     if group_id not in active_group_set:
+                        idle_groups_with_history.add(group_id)
                         tracked_topics = database.get_group_tracked_topics(
                             self._db_conn, group_id
                         )
@@ -126,6 +128,10 @@ class Sampler:
                             latest_offsets[(topic, partition)],
                             cycle_start,
                         )
+
+                # Step 3c: Mark idle groups as OFFLINE
+                for group_id in idle_groups_with_history:
+                    self._handle_idle_group(group_id, cycle_start)
 
                 # Step 4: Process each group
                 for group_id in active_groups:
