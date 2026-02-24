@@ -298,7 +298,12 @@ class Sampler:
         last_advancing_at = status["last_advancing_at"]
         status_changed_at = status["status_changed_at"]
 
-        partitions = self._get_partitions_for_topic(group_id, topic)
+        # Extract partitions from committed_offsets for this topic
+        partitions = [
+            partition
+            for (t, partition) in committed_offsets.keys()
+            if t == topic
+        ]
 
         if not partitions:
             return
