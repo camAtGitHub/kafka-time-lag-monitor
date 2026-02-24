@@ -137,7 +137,8 @@ def main() -> int:
 
     # Initialize database (creates tables, then we close this connection)
     try:
-        database.init_db(cfg.database.path)
+        init_conn = database.init_db(cfg.database.path)
+        init_conn.close()
         logger.info(f"Database initialized at {cfg.database.path}")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
