@@ -398,17 +398,16 @@ def prune_partition_offsets(
         Number of rows deleted
     """
     cursor = conn.execute(
-        """DELETE FROM partition_offsets 
-           WHERE topic = ? AND partition = ? 
+        """DELETE FROM partition_offsets
+           WHERE topic = ? AND partition = ?
            AND sampled_at NOT IN (
-               SELECT sampled_at FROM partition_offsets 
-               WHERE topic = ? AND partition = ? 
-               ORDER BY sampled_at DESC 
+               SELECT sampled_at FROM partition_offsets
+               WHERE topic = ? AND partition = ?
+               ORDER BY sampled_at DESC
                LIMIT ?
            )""",
         (topic, partition, topic, partition, keep_n),
     )
-    conn.commit()
     return cursor.rowcount
 
 
@@ -428,17 +427,16 @@ def prune_consumer_commits(
         Number of rows deleted
     """
     cursor = conn.execute(
-        """DELETE FROM consumer_commits 
-           WHERE group_id = ? AND topic = ? AND partition = ? 
+        """DELETE FROM consumer_commits
+           WHERE group_id = ? AND topic = ? AND partition = ?
            AND recorded_at NOT IN (
-               SELECT recorded_at FROM consumer_commits 
-               WHERE group_id = ? AND topic = ? AND partition = ? 
-               ORDER BY recorded_at DESC 
+               SELECT recorded_at FROM consumer_commits
+               WHERE group_id = ? AND topic = ? AND partition = ?
+               ORDER BY recorded_at DESC
                LIMIT ?
            )""",
         (group_id, topic, partition, group_id, topic, partition, keep_n),
     )
-    conn.commit()
     return cursor.rowcount
 
 

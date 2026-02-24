@@ -94,6 +94,9 @@ class Housekeeping:
         # Run incremental vacuum
         database.run_incremental_vacuum(self._db_conn, pages=100)
 
+        # Commit all prune operations in a single transaction
+        database.commit_batch(self._db_conn)
+
         # Log summary
         elapsed = time.time() - cycle_start
         logger.info(
