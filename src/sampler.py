@@ -193,7 +193,23 @@ class Sampler:
         group_partitions = group_topic_partitions.get(group_id, set())
 
         if not group_partitions:
+            # Group has no active partitions — handle idle status transition
             self._handle_idle_group(group_id, cycle_start)
+
+            # If group has DB history, write partition_offsets to keep them fresh
+            # This handles "ghost groups" — active in Kafka but zero-member
+            if database.has_group_history(self._db_conn, group_id):
+                tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
+                for topic in tracked_topics:
+                    partitions = self._get_partitions_for_topic(group_id, topic)
+                    for partition in partitions:
+                        if (topic, partition) in latest_offsets:
+                            self._write_partition_offset_if_needed(
+                                topic,
+                                partition,
+                                latest_offsets[(topic, partition)],
+                                cycle_start,
+                            )
             return
 
         # Fetch committed offsets for this group
