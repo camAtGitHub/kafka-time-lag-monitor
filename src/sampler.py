@@ -353,6 +353,9 @@ class Sampler:
 
                 if max_lag < lag_threshold and time_in_recovering >= min_duration:
                     new_status = "ONLINE"
+        else:
+            # Caught up (no lag) or insufficient history — clear counter
+            new_consecutive_static = 0
 
         # Persist status change if it occurred
         if new_status != current_status:

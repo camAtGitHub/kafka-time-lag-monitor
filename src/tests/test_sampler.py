@@ -465,6 +465,45 @@ class TestSamplerStateMachine:
 
         assert status["status"] == "ONLINE"
 
+    def test_consecutive_static_reset_when_caught_up(self, db_path, db_conn):
+        """Test that consecutive_static resets to 0 when consumer catches up (no lag)."""
+        config = make_test_config()
+        state_manager = MockStateManager()
+
+        current_time = int(time.time())
+        threshold = config.monitoring.offline_detection_consecutive_samples
+
+        # Pre-load with counter at threshold - 1
+        state_manager.set_group_status(
+            "group1", "topic1", "ONLINE", current_time - 100, current_time - 50, threshold - 1
+        )
+
+        # Insert static offsets (all same value)
+        for i in range(threshold):
+            db_conn.execute(
+                """INSERT INTO consumer_commits (group_id, topic, partition, committed_offset, recorded_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                ("group1", "topic1", 0, 100, current_time - (threshold - i - 1) * 60),
+            )
+        db_conn.commit()
+
+        kafka_client = MockKafkaClient()
+        s = Sampler(config, db_path, kafka_client, state_manager)
+
+        # Consumer is caught up: committed == produced (no lag)
+        committed_offsets = {("topic1", 0): 100}
+        latest_offsets = {("topic1", 0): 100}
+
+        s._evaluate_state_machine(
+            "group1", "topic1", committed_offsets, latest_offsets, current_time
+        )
+
+        status = state_manager.get_group_status("group1", "topic1")
+
+        # Counter should reset to 0, not stay at threshold - 1
+        assert status["consecutive_static"] == 0
+        assert status["status"] == "ONLINE"  # Should remain ONLINE
+
 
 class TestSamplerErrorHandling:
     """Tests for error handling in sampler."""
