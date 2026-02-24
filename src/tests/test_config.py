@@ -58,8 +58,8 @@ def test_valid_config_loads_successfully(tmp_path):
     assert cfg.monitoring.absent_group_retention_seconds == 604800  # default
     assert cfg.database.path == "/var/lib/kafka-lag-monitor/lag.db"
     assert cfg.output.json_path == "/var/lib/kafka-lag-monitor/lag.json"
-    assert cfg.exclude.topics == ["internal-topic"]
-    assert cfg.exclude.groups == ["internal-group"]
+    assert cfg.exclude.topics == {"internal-topic"}
+    assert cfg.exclude.groups == {"internal-group"}
 
 
 def test_missing_required_field_raises_config_error(tmp_path):
@@ -251,9 +251,9 @@ output:
     config_file.write_text(config_content)
     
     cfg = config.load_config(str(config_file))
-    
-    assert cfg.exclude.topics == []
-    assert cfg.exclude.groups == []
+
+    assert cfg.exclude.topics == set()
+    assert cfg.exclude.groups == set()
 
 
 def test_empty_config_file_raises_config_error(tmp_path):

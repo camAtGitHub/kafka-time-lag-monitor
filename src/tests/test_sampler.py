@@ -103,7 +103,7 @@ def make_test_config():
         ),
         database=DatabaseConfig(path=":memory:"),
         output=OutputConfig(json_path="/tmp/test.json"),
-        exclude=ExcludeConfig(topics=[], groups=[]),
+        exclude=ExcludeConfig(topics=set(), groups=set()),
     )
 
 

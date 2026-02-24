@@ -4,7 +4,7 @@ All SQL operations are isolated here. No other module writes SQL.
 """
 
 import sqlite3
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 
 
 def init_db(path: str) -> sqlite3.Connection:
@@ -344,14 +344,14 @@ def load_all_group_statuses(
 
 
 def is_topic_excluded(
-    conn: sqlite3.Connection, topic: str, config_exclusions: List[str]
+    conn: sqlite3.Connection, topic: str, config_exclusions: Set[str]
 ) -> bool:
     """Check if a topic is excluded (in config or database).
 
     Args:
         conn: Database connection
         topic: Topic name
-        config_exclusions: List of excluded topics from config
+        config_exclusions: Set of excluded topics from config
 
     Returns:
         True if topic is excluded
@@ -363,14 +363,14 @@ def is_topic_excluded(
 
 
 def is_group_excluded(
-    conn: sqlite3.Connection, group_id: str, config_exclusions: List[str]
+    conn: sqlite3.Connection, group_id: str, config_exclusions: Set[str]
 ) -> bool:
     """Check if a group is excluded (in config or database).
 
     Args:
         conn: Database connection
         group_id: Consumer group ID
-        config_exclusions: List of excluded groups from config
+        config_exclusions: Set of excluded groups from config
 
     Returns:
         True if group is excluded

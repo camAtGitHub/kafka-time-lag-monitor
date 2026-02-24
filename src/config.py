@@ -5,7 +5,7 @@ Config dataclass consumed by all other modules.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Set
 import yaml
 
 
@@ -51,8 +51,8 @@ class OutputConfig:
 @dataclass
 class ExcludeConfig:
     """Exclusion lists configuration."""
-    topics: List[str]
-    groups: List[str]
+    topics: Set[str]
+    groups: Set[str]
 
 
 @dataclass
@@ -302,8 +302,8 @@ def load_config(path: str) -> Config:
     _validate_type(groups, list, "exclude.groups")
     for i, group in enumerate(groups):
         _validate_type(group, str, f"exclude.groups[{i}]")
-    
-    exclude = ExcludeConfig(topics=topics, groups=groups)
+
+    exclude = ExcludeConfig(topics=set(topics), groups=set(groups))
     
     return Config(
         kafka=kafka,
