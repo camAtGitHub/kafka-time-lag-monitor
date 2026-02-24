@@ -6,6 +6,7 @@ and manages the consumer group state machine transitions.
 """
 
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Set, Tuple
 
@@ -157,6 +158,13 @@ class Sampler:
 
             except Exception as e:
                 logger.warning(f"Error during sampler cycle: {e}")
+                if isinstance(e, sqlite3.DatabaseError):
+                    logger.warning("DB error detected — reconnecting before next cycle")
+                    try:
+                        self._db_conn.close()
+                    except Exception:
+                        pass
+                    self._db_conn = database.get_connection(self._db_path)
 
             # Step 5: Sleep for remainder of sample interval
             elapsed = time.time() - cycle_start

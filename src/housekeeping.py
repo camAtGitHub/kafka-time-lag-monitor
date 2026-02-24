@@ -4,6 +4,7 @@ Handles periodic pruning and vacuum operations to manage database size.
 """
 
 import logging
+import sqlite3
 import time
 from typing import Any
 
@@ -56,6 +57,13 @@ class Housekeeping:
 
             except Exception as e:
                 logger.exception(f"Error in housekeeping cycle: {e}")
+                if isinstance(e, sqlite3.DatabaseError):
+                    logger.warning("DB error detected — reconnecting before next cycle")
+                    try:
+                        self._db_conn.close()
+                    except Exception:
+                        pass
+                    self._db_conn = database.get_connection(self._db_path)
                 # Sleep briefly before retrying
                 if shutdown_event.wait(timeout=5):
                     break
