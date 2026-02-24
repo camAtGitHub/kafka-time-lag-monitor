@@ -19,6 +19,10 @@ class KafkaConfig:
     """Kafka connection configuration."""
     bootstrap_servers: str
     security_protocol: str = "PLAINTEXT"
+    sasl_mechanism: Optional[str] = None
+    sasl_username: Optional[str] = None
+    sasl_password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
 
 
 @dataclass
@@ -167,10 +171,31 @@ def load_config(path: str) -> Config:
         kafka_data, "security_protocol", required=False, default="PLAINTEXT"
     )
     _validate_type(security_protocol, str, "kafka.security_protocol")
-    
+
+    # Optional SASL/TLS configuration
+    sasl_mechanism = _get_nested(kafka_data, "sasl_mechanism", required=False, default=None)
+    if sasl_mechanism is not None:
+        _validate_type(sasl_mechanism, str, "kafka.sasl_mechanism")
+
+    sasl_username = _get_nested(kafka_data, "sasl_username", required=False, default=None)
+    if sasl_username is not None:
+        _validate_type(sasl_username, str, "kafka.sasl_username")
+
+    sasl_password = _get_nested(kafka_data, "sasl_password", required=False, default=None)
+    if sasl_password is not None:
+        _validate_type(sasl_password, str, "kafka.sasl_password")
+
+    ssl_ca_location = _get_nested(kafka_data, "ssl_ca_location", required=False, default=None)
+    if ssl_ca_location is not None:
+        _validate_type(ssl_ca_location, str, "kafka.ssl_ca_location")
+
     kafka = KafkaConfig(
         bootstrap_servers=bootstrap_servers,
-        security_protocol=security_protocol
+        security_protocol=security_protocol,
+        sasl_mechanism=sasl_mechanism,
+        sasl_username=sasl_username,
+        sasl_password=sasl_password,
+        ssl_ca_location=ssl_ca_location,
     )
     
     # Monitoring configuration
