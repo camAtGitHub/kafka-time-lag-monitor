@@ -239,6 +239,30 @@ def load_config(path: str) -> Config:
         absent_group_retention_seconds, int, "monitoring.absent_group_retention_seconds"
     )
 
+    # Range validation for monitoring config fields
+    if sample_interval_seconds <= 0:
+        raise ConfigError("monitoring.sample_interval_seconds must be > 0")
+    if offline_sample_interval_seconds < sample_interval_seconds:
+        raise ConfigError(
+            "monitoring.offline_sample_interval_seconds must be >= sample_interval_seconds"
+        )
+    if report_interval_seconds <= 0:
+        raise ConfigError("monitoring.report_interval_seconds must be > 0")
+    if housekeeping_interval_seconds <= 0:
+        raise ConfigError("monitoring.housekeeping_interval_seconds must be > 0")
+    if max_entries_per_partition < 2:
+        raise ConfigError("monitoring.max_entries_per_partition must be >= 2")
+    if max_commit_entries_per_partition < 2:
+        raise ConfigError("monitoring.max_commit_entries_per_partition must be >= 2")
+    if offline_detection_consecutive_samples < 1:
+        raise ConfigError("monitoring.offline_detection_consecutive_samples must be >= 1")
+    if recovering_minimum_duration_seconds < 0:
+        raise ConfigError("monitoring.recovering_minimum_duration_seconds must be >= 0")
+    if online_lag_threshold_seconds < 0:
+        raise ConfigError("monitoring.online_lag_threshold_seconds must be >= 0")
+    if absent_group_retention_seconds <= 0:
+        raise ConfigError("monitoring.absent_group_retention_seconds must be > 0")
+
     monitoring = MonitoringConfig(
         sample_interval_seconds=sample_interval_seconds,
         offline_sample_interval_seconds=offline_sample_interval_seconds,
