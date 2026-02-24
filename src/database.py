@@ -165,6 +165,8 @@ def get_interpolation_points(
 ) -> List[Tuple[int, int]]:
     """Get all interpolation points for a topic/partition ordered by sampled_at DESC.
 
+    Returns up to 1000 most recent points as a defensive limit.
+
     Args:
         conn: Database connection
         topic: Topic name
@@ -174,9 +176,10 @@ def get_interpolation_points(
         List of (offset, sampled_at) tuples ordered by sampled_at DESC
     """
     cursor = conn.execute(
-        """SELECT offset, sampled_at FROM partition_offsets 
-           WHERE topic = ? AND partition = ? 
-           ORDER BY sampled_at DESC""",
+        """SELECT offset, sampled_at FROM partition_offsets
+           WHERE topic = ? AND partition = ?
+           ORDER BY sampled_at DESC
+           LIMIT 1000""",
         (topic, partition),
     )
     return [(row[0], row[1]) for row in cursor.fetchall()]
