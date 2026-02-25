@@ -792,3 +792,157 @@ class TestSamplerIdleGroup:
         s._handle_idle_group("new_group", time.time())
 
         assert "No partitions assigned to group new_group" in caplog.text
+
+
+class TestConsecutiveStaticCrossEpisode:
+    """Tests for TASK 57 - consecutive_static accumulation across lag episodes."""
+
+    def test_consecutive_static_does_not_accumulate_across_caught_up_episodes(
+        self, db_path, db_conn
+    ):
+        """
+        TASK 44 regression: consecutive_static must not accumulate across separate
+        lag episodes separated by caught-up periods.
+
+        Scenario:
+          - threshold = 5
+          - Pre-seed state: consecutive_static = 4 (one away from OFFLINE)
+          - Run one caught-up cycle (no lag, static offsets)
+          - Assert counter resets to 0, status remains ONLINE
+          - Run one static-with-lag cycle
+          - Assert counter is 1 (not 5), no OFFLINE transition
+        """
+        threshold = 5
+        config = make_test_config()
+        config.monitoring.offline_detection_consecutive_samples = threshold
+        state_mgr = MockStateManager()
+        mock_kafka = MagicMock()
+
+        s = Sampler(config, db_path, mock_kafka, state_mgr)
+
+        # Seed: 4 cycles of static-with-lag already accumulated
+        state_mgr.set_group_status(
+            "group1", "topic1", "ONLINE",
+            status_changed_at=int(time.time()) - 100,
+            last_advancing_at=int(time.time()) - 100,
+            consecutive_static=threshold - 1,
+        )
+
+        now = int(time.time())
+        produced = 1000
+
+        # Caught-up state: committed == produced (no lag), same offset across samples
+        db_conn.execute("DELETE FROM consumer_commits")
+        for i in range(threshold):
+            db_conn.execute(
+                "INSERT INTO consumer_commits VALUES (?,?,?,?,?)",
+                ("group1", "topic1", 0, produced, now - i)
+            )
+        db_conn.execute("DELETE FROM partition_offsets")
+        for i in range(threshold):
+            db_conn.execute(
+                "INSERT INTO partition_offsets VALUES (?,?,?,?)",
+                ("topic1", 0, produced, now - i)
+            )
+        db_conn.commit()
+
+        committed_offsets = {("topic1", 0): produced}
+        latest_offsets = {("topic1", 0): produced}
+
+        s._evaluate_state_machine(
+            "group1", "topic1", committed_offsets, latest_offsets, float(now)
+        )
+
+        status = state_mgr.get_group_status("group1", "topic1")
+        assert status["consecutive_static"] == 0, (
+            f"Expected 0 after caught-up cycle, got {status['consecutive_static']}"
+        )
+        assert status["status"] == "ONLINE", (
+            f"Expected ONLINE, got {status['status']}"
+        )
+
+        # Now one cycle of static-with-lag — counter must be 1, not 5
+        committed = 500  # has lag
+        db_conn.execute("DELETE FROM consumer_commits")
+        for i in range(threshold):
+            db_conn.execute(
+                "INSERT INTO consumer_commits VALUES (?,?,?,?,?)",
+                ("group1", "topic1", 0, committed, now - i)
+            )
+        db_conn.commit()
+
+        committed_offsets = {("topic1", 0): committed}
+        s._evaluate_state_machine(
+            "group1", "topic1", committed_offsets, latest_offsets, float(now)
+        )
+
+        status = state_mgr.get_group_status("group1", "topic1")
+        assert status["consecutive_static"] == 1, (
+            f"Expected 1 after one lag cycle post-reset, got {status['consecutive_static']}. "
+            "Regression: counter was not cleared during caught-up period"
+        )
+        assert status["status"] == "ONLINE", (
+            "OFFLINE transition fired prematurely — cross-episode accumulation regression"
+        )
+
+
+class TestGhostGroupOffsets:
+    """Tests for TASK 58 - ghost group partition_offsets freshness."""
+
+    def test_ghost_group_partition_offsets_written_when_active_but_zero_members(
+        self, db_path, db_conn
+    ):
+        """
+        TASK 32 regression: a group that appears in get_active_consumer_groups()
+        but has zero active members (empty group_partitions) must still have
+        partition_offsets written to keep interpolation data fresh.
+
+        Pre-fix: _process_group called _handle_idle_group but never wrote
+        partition_offsets, so interpolation stalled and lag reported 0 forever.
+        """
+        from unittest.mock import MagicMock
+
+        config = make_test_config()
+        state_mgr = MockStateManager()
+        mock_kafka = MagicMock()
+
+        s = Sampler(config, db_path, mock_kafka, state_mgr)
+
+        # Seed DB history so has_group_history() returns True
+        now = int(time.time())
+        db_conn.execute(
+            "INSERT INTO consumer_commits VALUES (?,?,?,?,?)",
+            ("ghost-group", "topic1", 0, 400, now - 60)
+        )
+        db_conn.execute(
+            "INSERT INTO partition_offsets VALUES (?,?,?,?)",
+            ("topic1", 0, 490, now - 60)  # old entry
+        )
+        db_conn.commit()
+
+        # Group is in Kafka but has zero members → empty partition set
+        latest_offsets = {("topic1", 0): 500}
+        group_topic_partitions = {"ghost-group": set()}
+
+        s._process_group("ghost-group", group_topic_partitions, latest_offsets, float(now))
+        database.commit_batch(s._db_conn)
+
+        rows = db_conn.execute(
+            "SELECT offset, sampled_at FROM partition_offsets "
+            "WHERE topic='topic1' AND partition=0 "
+            "ORDER BY sampled_at DESC LIMIT 1"
+        ).fetchone()
+
+        assert rows is not None, "No partition_offset row found after ghost group cycle"
+        assert rows[0] == 500, f"Expected HWM offset 500, got {rows[0]}"
+        assert rows[1] == int(now), (
+            "partition_offset timestamp not updated — ghost group data is stale. "
+            "Regression: has_group_history block removed from _process_group."
+        )
+
+        # Group must also be transitioned to OFFLINE
+        status = state_mgr.get_group_status("ghost-group", "topic1")
+        assert status["status"] == "OFFLINE", (
+            f"Ghost group should be OFFLINE, got {status['status']}"
+        )
+

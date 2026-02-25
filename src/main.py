@@ -219,9 +219,7 @@ def main() -> int:
 
     # Main thread heartbeat
     try:
-        while not shutdown_event.is_set():
-            time.sleep(30)
-
+        while not shutdown_event.wait(timeout=30):
             # Log heartbeat at DEBUG level
             sampler_last = state_mgr.get_thread_last_run("sampler")
             reporter_last = state_mgr.get_thread_last_run("reporter")
@@ -238,8 +236,10 @@ def main() -> int:
     # Shutdown
     logger.info("Shutting down threads...")
 
+    deadline = time.time() + 10
     for thread in threads:
-        thread.join(timeout=10)
+        remaining = max(0, deadline - time.time())
+        thread.join(timeout=remaining)
         if thread.is_alive():
             logger.warning(f"Thread {thread.name} did not stop within timeout")
 
