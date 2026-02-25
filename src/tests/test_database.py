@@ -2,10 +2,12 @@
 
 import pytest
 import sqlite3
+import time
 from database import (
     init_db,
     insert_partition_offset,
     insert_consumer_commit,
+    commit_batch,
     get_interpolation_points,
     get_recent_commits,
     get_last_write_time,
@@ -106,6 +108,47 @@ class TestPartitionOffsets:
         assert len(points_b) == 1
         assert points_a[0][0] == 1000
         assert points_b[0][0] == 2000
+
+    def test_get_interpolation_points_respects_limit(self, db_conn):
+        """TASK 52: get_interpolation_points must return at most `limit` rows."""
+        now = int(time.time())
+        for i in range(20):
+            insert_partition_offset(db_conn, "topic1", 0, i * 10, now - i)
+        commit_batch(db_conn)
+
+        result = get_interpolation_points(db_conn, "topic1", 0, limit=5)
+        assert len(result) == 5, f"Expected 5 rows with limit=5, got {len(result)}"
+
+    def test_get_interpolation_points_default_limit_is_safe(self, db_conn):
+        """
+        Default limit (500) must be applied when no limit is passed explicitly.
+        Insert 600 rows; expect at most 500 returned.
+        """
+        now = int(time.time())
+        for i in range(600):
+            insert_partition_offset(db_conn, "topic1", 0, i, now - i)
+        commit_batch(db_conn)
+
+        result = get_interpolation_points(db_conn, "topic1", 0)
+        assert len(result) <= 500, (
+            f"Default limit not enforced: got {len(result)} rows, expected <= 500"
+        )
+
+    def test_get_interpolation_points_returns_most_recent_rows(self, db_conn):
+        """
+        When limit truncates results, the most recent rows (highest sampled_at)
+        must be returned, ordered DESC by sampled_at.
+        """
+        now = int(time.time())
+        for i in range(10):
+            insert_partition_offset(db_conn, "topic1", 0, i * 100, now - i)
+        commit_batch(db_conn)
+
+        result = get_interpolation_points(db_conn, "topic1", 0, limit=3)
+        assert len(result) == 3
+        assert result[0][1] == now       # most recent first
+        assert result[1][1] == now - 1
+        assert result[2][1] == now - 2
 
     def test_get_last_write_time_returns_most_recent(self, db_conn):
         """Verify get_last_write_time returns the most recent timestamp."""
