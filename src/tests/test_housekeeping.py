@@ -340,3 +340,125 @@ class TestHousekeepingCycle:
         hk = Housekeeping(bad_config, db_path_initialized)
 
         hk.run(shutdown_event)
+
+
+class TestHousekeepingErrorHandling:
+    """Tests for TASK 54 - housekeeping DB reconnect."""
+
+    def test_db_reconnect_on_database_error_and_next_cycle_succeeds(
+        self, db_path_initialized, db_conn, mock_config
+    ):
+        """
+        TASK 42 regression: after a sqlite3.DatabaseError mid-cycle, housekeeping
+        must obtain a fresh connection and succeed on the next cycle.
+        """
+        import sqlite3
+        from unittest.mock import patch
+        import threading
+
+        now = int(time.time())
+        for i in range(10):
+            database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
+        database.commit_batch(db_conn)
+
+        call_count = {"n": 0}
+        original_prune = database.prune_partition_offsets
+
+        def prune_side_effect(*args, **kwargs):
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise sqlite3.DatabaseError("database disk image is malformed")
+            return original_prune(*args, **kwargs)
+
+        with patch("housekeeping.database.prune_partition_offsets", side_effect=prune_side_effect):
+            hk = Housekeeping(mock_config, db_path_initialized)
+            initial_conn = hk._db_conn
+
+            # Run exactly two cycles: error on cycle 1, succeed on cycle 2
+            shutdown_event = threading.Event()
+            cycle_count = {"n": 0}
+            original_wait = shutdown_event.wait
+
+            def controlled_wait(timeout=None):
+                cycle_count["n"] += 1
+                if cycle_count["n"] >= 2:
+                    shutdown_event.set()
+                return original_wait(timeout=0.01)
+
+            shutdown_event.wait = controlled_wait
+            hk.run(shutdown_event)
+
+        # A new connection must have been obtained after the error
+        assert hk._db_conn is not initial_conn, "Connection was not replaced after error"
+
+
+class TestHousekeepingPruneVerification:
+    """Tests for TASK 55 - verify that pruning actually deletes rows from DB."""
+
+    def test_housekeeping_cycle_actually_deletes_rows_from_partition_offsets(
+        self, db_path_initialized, db_conn, mock_config
+    ):
+        """
+        TASK 43 regression: after _run_cycle(), rows exceeding max_entries_per_partition
+        must be physically absent from the database — not just reported as deleted.
+
+        The pre-fix bug was: prune functions issued conn.commit() per-partition but
+        housekeeping._run_cycle() had no final commit_batch(), causing all DELETEs
+        to roll back silently while rowcount was still reported correctly.
+        """
+        max_entries = mock_config.monitoring.max_entries_per_partition
+        insert_count = max_entries + 50  # exceed limit by 50
+
+        now = int(time.time())
+        for i in range(insert_count):
+            database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
+        database.commit_batch(db_conn)
+
+        # Verify setup: rows exist above threshold
+        pre_count = db_conn.execute(
+            "SELECT COUNT(*) FROM partition_offsets WHERE topic='topic1' AND partition=0"
+        ).fetchone()[0]
+        assert pre_count == insert_count
+
+        hk = Housekeeping(mock_config, db_path_initialized)
+        hk._run_cycle()
+
+        # Query via a SEPARATE connection to confirm the commit reached the DB file
+        verify_conn = database.get_connection(db_path_initialized)
+        post_count = verify_conn.execute(
+            "SELECT COUNT(*) FROM partition_offsets WHERE topic='topic1' AND partition=0"
+        ).fetchone()[0]
+        verify_conn.close()
+
+        assert post_count == max_entries, (
+            f"Expected {max_entries} rows after pruning, found {post_count}. "
+            "Regression: commit_batch() may be missing from _run_cycle()."
+        )
+
+    def test_housekeeping_cycle_actually_deletes_rows_from_consumer_commits(
+        self, db_path_initialized, db_conn, mock_config
+    ):
+        """Same as above for consumer_commits table."""
+        max_entries = mock_config.monitoring.max_commit_entries_per_partition
+        insert_count = max_entries + 50
+        now = int(time.time())
+
+        for i in range(insert_count):
+            database.insert_consumer_commit(db_conn, "group1", "topic1", 0, i, now - i)
+        database.commit_batch(db_conn)
+
+        hk = Housekeeping(mock_config, db_path_initialized)
+        hk._run_cycle()
+
+        verify_conn = database.get_connection(db_path_initialized)
+        post_count = verify_conn.execute(
+            "SELECT COUNT(*) FROM consumer_commits "
+            "WHERE group_id='group1' AND topic='topic1' AND partition=0"
+        ).fetchone()[0]
+        verify_conn.close()
+
+        assert post_count == max_entries, (
+            f"Expected {max_entries} rows, found {post_count}. "
+            "Regression: commit_batch() may be missing from _run_cycle()."
+        )
+
