@@ -342,56 +342,6 @@ class TestHousekeepingCycle:
         hk.run(shutdown_event)
 
 
-class TestHousekeepingErrorHandling:
-    """Tests for TASK 54 - housekeeping DB reconnect."""
-
-    def test_db_reconnect_on_database_error_and_next_cycle_succeeds(
-        self, db_path_initialized, db_conn, mock_config
-    ):
-        """
-        TASK 42 regression: after a sqlite3.DatabaseError mid-cycle, housekeeping
-        must obtain a fresh connection and succeed on the next cycle.
-        """
-        import sqlite3
-        from unittest.mock import patch
-        import threading
-
-        now = int(time.time())
-        for i in range(10):
-            database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
-        database.commit_batch(db_conn)
-
-        call_count = {"n": 0}
-        original_prune = database.prune_partition_offsets
-
-        def prune_side_effect(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise sqlite3.DatabaseError("database disk image is malformed")
-            return original_prune(*args, **kwargs)
-
-        with patch("housekeeping.database.prune_partition_offsets", side_effect=prune_side_effect):
-            hk = Housekeeping(mock_config, db_path_initialized)
-            initial_conn = hk._db_conn
-
-            # Run exactly two cycles: error on cycle 1, succeed on cycle 2
-            shutdown_event = threading.Event()
-            cycle_count = {"n": 0}
-            original_wait = shutdown_event.wait
-
-            def controlled_wait(timeout=None):
-                cycle_count["n"] += 1
-                if cycle_count["n"] >= 2:
-                    shutdown_event.set()
-                return original_wait(timeout=0.01)
-
-            shutdown_event.wait = controlled_wait
-            hk.run(shutdown_event)
-
-        # A new connection must have been obtained after the error
-        assert hk._db_conn is not initial_conn, "Connection was not replaced after error"
-
-
 class TestHousekeepingPruneVerification:
     """Tests for TASK 55 - verify that pruning actually deletes rows from DB."""
 

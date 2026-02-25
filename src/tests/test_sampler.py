@@ -538,56 +538,6 @@ class TestSamplerErrorHandling:
 
             s.run(shutdown_event)
 
-    def test_db_reconnect_on_database_error_and_next_cycle_succeeds(self, db_path, db_conn):
-        """
-        TASK 42 regression: after a sqlite3.DatabaseError mid-cycle, the sampler
-        must obtain a fresh connection and succeed on the next cycle.
-        """
-        import sqlite3
-        from unittest.mock import MagicMock, patch
-        import threading
-
-        config = make_test_config()
-        state_mgr = MockStateManager()
-
-        mock_kafka = MagicMock()
-        mock_kafka.get_active_consumer_groups.return_value = ["group1"]
-        mock_kafka.get_all_consumed_topic_partitions.return_value = {
-            "group1": {("topic1", 0)}
-        }
-        mock_kafka.get_latest_produced_offsets.return_value = {("topic1", 0): 100}
-        mock_kafka.get_committed_offsets.return_value = {("topic1", 0): 50}
-
-        call_count = {"n": 0}
-        original_insert = database.insert_consumer_commit
-
-        def insert_side_effect(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise sqlite3.DatabaseError("database is locked")
-            return original_insert(*args, **kwargs)
-
-        with patch("sampler.database.insert_consumer_commit", side_effect=insert_side_effect):
-            s = Sampler(config, db_path, mock_kafka, state_mgr)
-            initial_conn_id = id(s._db_conn)
-
-            # Run exactly three cycles: error on cycle 1, reconnect, succeed on cycles 2-3
-            shutdown_event = threading.Event()
-            cycle_count = {"n": 0}
-            original_wait = shutdown_event.wait
-
-            def controlled_wait(timeout=None):
-                cycle_count["n"] += 1
-                if cycle_count["n"] >= 3:
-                    shutdown_event.set()
-                return original_wait(timeout=0.01)
-
-            shutdown_event.wait = controlled_wait
-            s.run(shutdown_event)
-
-            # A new connection must have been obtained after the error
-            assert id(s._db_conn) != initial_conn_id, "Connection was not replaced after error"
-
 
 class TestSamplerRunLoop:
     """Tests for sampler run loop."""

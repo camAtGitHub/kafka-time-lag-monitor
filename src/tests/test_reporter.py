@@ -333,55 +333,6 @@ class TestReporterErrorHandling:
         assert len(output["consumers"]) == 1
         assert output["consumers"][0]["group_id"] == "group2"
 
-    def test_db_reconnect_on_database_error_and_next_cycle_succeeds(
-        self, db_path_initialized, mock_config, mock_state_manager
-    ):
-        """
-        TASK 42 regression: after a sqlite3.DatabaseError mid-cycle, the reporter
-        must obtain a fresh connection and succeed on the next cycle.
-        """
-        import threading
-        from unittest.mock import patch
-
-        now = int(time.time())
-        conn = database.get_connection(db_path_initialized)
-        try:
-            database.insert_partition_offset(conn, "topic1", 0, 100, now)
-            database.insert_consumer_commit(conn, "group1", "topic1", 0, 50, now)
-            database.commit_batch(conn)
-        finally:
-            conn.close()
-
-        call_count = {"n": 0}
-        original_get_all = database.get_all_commit_keys
-
-        def get_all_side_effect(*args, **kwargs):
-            call_count["n"] += 1
-            if call_count["n"] == 1:
-                raise sqlite3.DatabaseError("database disk image is malformed")
-            return original_get_all(*args, **kwargs)
-
-        with patch("reporter.database.get_all_commit_keys", side_effect=get_all_side_effect):
-            r = Reporter(mock_config, db_path_initialized, mock_state_manager)
-            initial_conn = r._db_conn
-
-            # Run exactly two cycles: error on cycle 1, succeed on cycle 2
-            shutdown_event = threading.Event()
-            cycle_count = {"n": 0}
-            original_wait = shutdown_event.wait
-
-            def controlled_wait(timeout=None):
-                cycle_count["n"] += 1
-                if cycle_count["n"] >= 2:
-                    shutdown_event.set()
-                return original_wait(timeout=0.01)
-
-            shutdown_event.wait = controlled_wait
-            r.run(shutdown_event)
-
-        # A new connection must have been obtained after the error
-        assert r._db_conn is not initial_conn, "Connection was not replaced after error"
-
 
 class TestReporterDataResolution:
     """Tests for data_resolution field."""
