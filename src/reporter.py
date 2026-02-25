@@ -6,6 +6,7 @@ Transforms database state into consumer-facing JSON output files.
 import json
 import logging
 import os
+import sqlite3
 import time
 from typing import Any, Dict, List, Tuple, Optional
 
@@ -64,6 +65,13 @@ class Reporter:
 
             except Exception as e:
                 logger.exception(f"Error in reporter cycle: {e}")
+                if isinstance(e, sqlite3.DatabaseError):
+                    logger.warning("DB error detected — reconnecting before next cycle")
+                    try:
+                        self._db_conn.close()
+                    except Exception:
+                        pass
+                    self._db_conn = database.get_connection(self._db_path)
                 # Sleep briefly before retrying
                 if shutdown_event.wait(timeout=5):
                     break

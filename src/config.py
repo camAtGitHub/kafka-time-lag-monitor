@@ -5,7 +5,7 @@ Config dataclass consumed by all other modules.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Any
+from typing import List, Optional, Any, Set
 import yaml
 
 
@@ -19,6 +19,10 @@ class KafkaConfig:
     """Kafka connection configuration."""
     bootstrap_servers: str
     security_protocol: str = "PLAINTEXT"
+    sasl_mechanism: Optional[str] = None
+    sasl_username: Optional[str] = None
+    sasl_password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
 
 
 @dataclass
@@ -51,8 +55,8 @@ class OutputConfig:
 @dataclass
 class ExcludeConfig:
     """Exclusion lists configuration."""
-    topics: List[str]
-    groups: List[str]
+    topics: Set[str]
+    groups: Set[str]
 
 
 @dataclass
@@ -167,10 +171,31 @@ def load_config(path: str) -> Config:
         kafka_data, "security_protocol", required=False, default="PLAINTEXT"
     )
     _validate_type(security_protocol, str, "kafka.security_protocol")
-    
+
+    # Optional SASL/TLS configuration
+    sasl_mechanism = _get_nested(kafka_data, "sasl_mechanism", required=False, default=None)
+    if sasl_mechanism is not None:
+        _validate_type(sasl_mechanism, str, "kafka.sasl_mechanism")
+
+    sasl_username = _get_nested(kafka_data, "sasl_username", required=False, default=None)
+    if sasl_username is not None:
+        _validate_type(sasl_username, str, "kafka.sasl_username")
+
+    sasl_password = _get_nested(kafka_data, "sasl_password", required=False, default=None)
+    if sasl_password is not None:
+        _validate_type(sasl_password, str, "kafka.sasl_password")
+
+    ssl_ca_location = _get_nested(kafka_data, "ssl_ca_location", required=False, default=None)
+    if ssl_ca_location is not None:
+        _validate_type(ssl_ca_location, str, "kafka.ssl_ca_location")
+
     kafka = KafkaConfig(
         bootstrap_servers=bootstrap_servers,
-        security_protocol=security_protocol
+        security_protocol=security_protocol,
+        sasl_mechanism=sasl_mechanism,
+        sasl_username=sasl_username,
+        sasl_password=sasl_password,
+        ssl_ca_location=ssl_ca_location,
     )
     
     # Monitoring configuration
@@ -239,6 +264,30 @@ def load_config(path: str) -> Config:
         absent_group_retention_seconds, int, "monitoring.absent_group_retention_seconds"
     )
 
+    # Range validation for monitoring config fields
+    if sample_interval_seconds <= 0:
+        raise ConfigError("monitoring.sample_interval_seconds must be > 0")
+    if offline_sample_interval_seconds < sample_interval_seconds:
+        raise ConfigError(
+            "monitoring.offline_sample_interval_seconds must be >= sample_interval_seconds"
+        )
+    if report_interval_seconds <= 0:
+        raise ConfigError("monitoring.report_interval_seconds must be > 0")
+    if housekeeping_interval_seconds <= 0:
+        raise ConfigError("monitoring.housekeeping_interval_seconds must be > 0")
+    if max_entries_per_partition < 2:
+        raise ConfigError("monitoring.max_entries_per_partition must be >= 2")
+    if max_commit_entries_per_partition < 2:
+        raise ConfigError("monitoring.max_commit_entries_per_partition must be >= 2")
+    if offline_detection_consecutive_samples < 1:
+        raise ConfigError("monitoring.offline_detection_consecutive_samples must be >= 1")
+    if recovering_minimum_duration_seconds < 0:
+        raise ConfigError("monitoring.recovering_minimum_duration_seconds must be >= 0")
+    if online_lag_threshold_seconds < 0:
+        raise ConfigError("monitoring.online_lag_threshold_seconds must be >= 0")
+    if absent_group_retention_seconds <= 0:
+        raise ConfigError("monitoring.absent_group_retention_seconds must be > 0")
+
     monitoring = MonitoringConfig(
         sample_interval_seconds=sample_interval_seconds,
         offline_sample_interval_seconds=offline_sample_interval_seconds,
@@ -278,8 +327,8 @@ def load_config(path: str) -> Config:
     _validate_type(groups, list, "exclude.groups")
     for i, group in enumerate(groups):
         _validate_type(group, str, f"exclude.groups[{i}]")
-    
-    exclude = ExcludeConfig(topics=topics, groups=groups)
+
+    exclude = ExcludeConfig(topics=set(topics), groups=set(groups))
     
     return Config(
         kafka=kafka,

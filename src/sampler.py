@@ -6,6 +6,7 @@ and manages the consumer group state machine transitions.
 """
 
 import logging
+import sqlite3
 import time
 from typing import Any, Dict, List, Set, Tuple
 
@@ -157,6 +158,13 @@ class Sampler:
 
             except Exception as e:
                 logger.warning(f"Error during sampler cycle: {e}")
+                if isinstance(e, sqlite3.DatabaseError):
+                    logger.warning("DB error detected — reconnecting before next cycle")
+                    try:
+                        self._db_conn.close()
+                    except Exception:
+                        pass
+                    self._db_conn = database.get_connection(self._db_path)
 
             # Step 5: Sleep for remainder of sample interval
             elapsed = time.time() - cycle_start
@@ -185,7 +193,23 @@ class Sampler:
         group_partitions = group_topic_partitions.get(group_id, set())
 
         if not group_partitions:
+            # Group has no active partitions — handle idle status transition
             self._handle_idle_group(group_id, cycle_start)
+
+            # If group has DB history, write partition_offsets to keep them fresh
+            # This handles "ghost groups" — active in Kafka but zero-member
+            if database.has_group_history(self._db_conn, group_id):
+                tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
+                for topic in tracked_topics:
+                    partitions = self._get_partitions_for_topic(group_id, topic)
+                    for partition in partitions:
+                        if (topic, partition) in latest_offsets:
+                            self._write_partition_offset_if_needed(
+                                topic,
+                                partition,
+                                latest_offsets[(topic, partition)],
+                                cycle_start,
+                            )
             return
 
         # Fetch committed offsets for this group
@@ -290,7 +314,12 @@ class Sampler:
         last_advancing_at = status["last_advancing_at"]
         status_changed_at = status["status_changed_at"]
 
-        partitions = self._get_partitions_for_topic(group_id, topic)
+        # Extract partitions from committed_offsets for this topic
+        partitions = [
+            partition
+            for (t, partition) in committed_offsets.keys()
+            if t == topic
+        ]
 
         if not partitions:
             return
@@ -353,6 +382,9 @@ class Sampler:
 
                 if max_lag < lag_threshold and time_in_recovering >= min_duration:
                     new_status = "ONLINE"
+        else:
+            # Caught up (no lag) or insufficient history — clear counter
+            new_consecutive_static = 0
 
         # Persist status change if it occurred
         if new_status != current_status:

@@ -38,18 +38,24 @@ Create a `config.yaml` file with the following structure:
 ```yaml
 kafka:
   bootstrap_servers: "broker1:9092,broker2:9092"
-  security_protocol: PLAINTEXT   # or SASL_SSL, SSL, etc.
+  security_protocol: PLAINTEXT   # or SASL_SSL, SASL_PLAINTEXT, SSL
+  # Optional SASL/TLS configuration (required for SASL_SSL/SASL_PLAINTEXT)
+  sasl_mechanism: PLAIN          # e.g., PLAIN, SCRAM-SHA-256, SCRAM-SHA-512
+  sasl_username: "your-username"
+  sasl_password: "your-password"
+  ssl_ca_location: "/path/to/ca-cert.pem"  # Required for SSL/SASL_SSL
 
 monitoring:
-  sample_interval_seconds: 60          # How often to sample ONLINE groups
-  offline_sample_interval_seconds: 1800  # How often to sample OFFLINE/RECOVERING groups
-  report_interval_seconds: 60         # How often to write JSON output
-  housekeeping_interval_seconds: 900  # How often to prune old data
-  max_entries_per_partition: 300      # Max partition_offsets rows per topic/partition
-  max_commit_entries_per_partition: 100  # Max consumer_commits rows per group/topic/partition
-  offline_detection_consecutive_samples: 5  # Samples before declaring OFFLINE
-  recovering_minimum_duration_seconds: 900  # Min time in RECOVERING before ONLINE
-  online_lag_threshold_seconds: 600     # Lag threshold to declare ONLINE
+  sample_interval_seconds: 60          # How often to sample ONLINE groups (must be > 0)
+  offline_sample_interval_seconds: 1800  # How often to sample OFFLINE/RECOVERING groups (must be >= sample_interval_seconds)
+  report_interval_seconds: 60         # How often to write JSON output (must be > 0)
+  housekeeping_interval_seconds: 900  # How often to prune old data (must be > 0)
+  max_entries_per_partition: 300      # Max partition_offsets rows per topic/partition (must be >= 2)
+  max_commit_entries_per_partition: 100  # Max consumer_commits rows per group/topic/partition (must be >= 2)
+  offline_detection_consecutive_samples: 5  # Samples before declaring OFFLINE (must be >= 1)
+  recovering_minimum_duration_seconds: 900  # Min time in RECOVERING before ONLINE (must be >= 0)
+  online_lag_threshold_seconds: 600     # Lag threshold to declare ONLINE (must be >= 0)
+  absent_group_retention_seconds: 604800  # How long to retain absent groups (7 days, must be > 0)
 
 database:
   path: "/var/lib/kafka-lag-monitor/state.db"
@@ -67,31 +73,50 @@ exclude:
 
 ### Configuration Options
 
-| Section | Field | Description | Default |
-|---------|-------|-------------|---------|
-| kafka | bootstrap_servers | Comma-separated list of Kafka brokers | (required) |
-| kafka | security_protocol | Kafka security protocol | PLAINTEXT |
-| monitoring | sample_interval_seconds | Sampling interval for ONLINE groups | 60 |
-| monitoring | offline_sample_interval_seconds | Sampling interval for OFFLINE/RECOVERING groups | 1800 |
-| monitoring | report_interval_seconds | How often to write JSON output | 60 |
-| monitoring | housekeeping_interval_seconds | How often to prune database | 900 |
-| monitoring | max_entries_per_partition | Max rows in partition_offsets table | 300 |
-| monitoring | max_commit_entries_per_partition | Max rows in consumer_commits table | 100 |
-| monitoring | offline_detection_consecutive_samples | Samples before OFFLINE transition | 5 |
-| monitoring | recovering_minimum_duration_seconds | Min RECOVERING duration before ONLINE | 900 |
-| monitoring | online_lag_threshold_seconds | Lag threshold for ONLINE status | 600 |
-| database | path | Path to SQLite database file | (required) |
-| output | json_path | Path for JSON output file | (required) |
-| exclude | topics | List of topics to exclude | [] |
-| exclude | groups | List of consumer groups to exclude | [] |
+| Section | Field | Description | Default | Validation |
+|---------|-------|-------------|---------|------------|
+| kafka | bootstrap_servers | Comma-separated list of Kafka brokers | (required) | - |
+| kafka | security_protocol | Kafka security protocol | PLAINTEXT | - |
+| kafka | sasl_mechanism | SASL mechanism (e.g., PLAIN, SCRAM-SHA-256) | None | Optional |
+| kafka | sasl_username | SASL username | None | Optional |
+| kafka | sasl_password | SASL password | None | Optional |
+| kafka | ssl_ca_location | Path to CA certificate for SSL | None | Optional |
+| monitoring | sample_interval_seconds | Sampling interval for ONLINE groups | 60 | Must be > 0 |
+| monitoring | offline_sample_interval_seconds | Sampling interval for OFFLINE/RECOVERING groups | 1800 | Must be >= sample_interval_seconds |
+| monitoring | report_interval_seconds | How often to write JSON output | 60 | Must be > 0 |
+| monitoring | housekeeping_interval_seconds | How often to prune database | 900 | Must be > 0 |
+| monitoring | max_entries_per_partition | Max rows in partition_offsets table | 300 | Must be >= 2 |
+| monitoring | max_commit_entries_per_partition | Max rows in consumer_commits table | 100 | Must be >= 2 |
+| monitoring | offline_detection_consecutive_samples | Samples before OFFLINE transition | 5 | Must be >= 1 |
+| monitoring | recovering_minimum_duration_seconds | Min RECOVERING duration before ONLINE | 900 | Must be >= 0 |
+| monitoring | online_lag_threshold_seconds | Lag threshold for ONLINE status | 600 | Must be >= 0 |
+| monitoring | absent_group_retention_seconds | How long to retain absent groups | 604800 | Must be > 0 |
+| database | path | Path to SQLite database file | (required) | - |
+| output | json_path | Path for JSON output file | (required) | Directory must exist |
+| exclude | topics | List of topics to exclude | [] | - |
+| exclude | groups | List of consumer groups to exclude | [] | - |
 
-## Usage
+**Note on SASL/TLS:** When using `security_protocol: SASL_SSL` or `SASL_PLAINTEXT`, you must provide `sasl_mechanism`, `sasl_username`, and `sasl_password`. For SSL-based protocols, `ssl_ca_location` is also required. The system will log a warning if SASL credentials are incomplete.
 
+## Quick Start
+
+1. **Create the required directories:**
+   ```bash
+   sudo mkdir -p /var/lib/kafka-lag-monitor
+   sudo chown $USER /var/lib/kafka-lag-monitor
+   ```
+
+2. **Create a configuration file** (see Configuration section above)
+
+3. **Run the daemon:**
+   ```bash
+   python -m main --config /path/to/config.yaml
+   ```
+
+The daemon also supports a `--debug` flag for verbose logging:
 ```bash
-python -m main --config /path/to/config.yaml
+python -m main --config /path/to/config.yaml --debug
 ```
-
-The daemon also supports a `--debug` flag for verbose logging.
 
 ### Signal Handling
 

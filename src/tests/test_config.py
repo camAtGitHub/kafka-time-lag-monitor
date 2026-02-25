@@ -58,8 +58,8 @@ def test_valid_config_loads_successfully(tmp_path):
     assert cfg.monitoring.absent_group_retention_seconds == 604800  # default
     assert cfg.database.path == "/var/lib/kafka-lag-monitor/lag.db"
     assert cfg.output.json_path == "/var/lib/kafka-lag-monitor/lag.json"
-    assert cfg.exclude.topics == ["internal-topic"]
-    assert cfg.exclude.groups == ["internal-group"]
+    assert cfg.exclude.topics == {"internal-topic"}
+    assert cfg.exclude.groups == {"internal-group"}
 
 
 def test_missing_required_field_raises_config_error(tmp_path):
@@ -251,9 +251,9 @@ output:
     config_file.write_text(config_content)
     
     cfg = config.load_config(str(config_file))
-    
-    assert cfg.exclude.topics == []
-    assert cfg.exclude.groups == []
+
+    assert cfg.exclude.topics == set()
+    assert cfg.exclude.groups == set()
 
 
 def test_empty_config_file_raises_config_error(tmp_path):
@@ -347,3 +347,149 @@ output:
     cfg = config.load_config(str(config_file))
 
     assert cfg.monitoring.absent_group_retention_seconds == 3600
+
+
+# Range validation tests for TASK 49
+def test_sample_interval_seconds_zero_raises_error(tmp_path):
+    """Test that sample_interval_seconds=0 raises ConfigError."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+monitoring:
+  sample_interval_seconds: 0
+  offline_sample_interval_seconds: 1800
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: 180
+  online_lag_threshold_seconds: 60
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_config(str(config_file))
+
+    assert "sample_interval_seconds must be > 0" in str(exc_info.value)
+
+
+def test_offline_sample_interval_less_than_sample_interval_raises_error(tmp_path):
+    """Test that offline_sample_interval < sample_interval raises ConfigError."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+monitoring:
+  sample_interval_seconds: 60
+  offline_sample_interval_seconds: 30
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: 180
+  online_lag_threshold_seconds: 60
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_config(str(config_file))
+
+    assert "offline_sample_interval_seconds must be >= sample_interval_seconds" in str(exc_info.value)
+
+
+def test_max_entries_per_partition_less_than_2_raises_error(tmp_path):
+    """Test that max_entries_per_partition < 2 raises ConfigError."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+monitoring:
+  sample_interval_seconds: 60
+  offline_sample_interval_seconds: 1800
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 1
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: 180
+  online_lag_threshold_seconds: 60
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_config(str(config_file))
+
+    assert "max_entries_per_partition must be >= 2" in str(exc_info.value)
+
+
+def test_offline_detection_consecutive_samples_zero_raises_error(tmp_path):
+    """Test that offline_detection_consecutive_samples=0 raises ConfigError."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+monitoring:
+  sample_interval_seconds: 60
+  offline_sample_interval_seconds: 1800
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 0
+  recovering_minimum_duration_seconds: 180
+  online_lag_threshold_seconds: 60
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_config(str(config_file))
+
+    assert "offline_detection_consecutive_samples must be >= 1" in str(exc_info.value)
+
+
+def test_recovering_minimum_duration_seconds_negative_raises_error(tmp_path):
+    """Test that negative recovering_minimum_duration_seconds raises ConfigError."""
+    config_content = """
+kafka:
+  bootstrap_servers: "localhost:9092"
+monitoring:
+  sample_interval_seconds: 60
+  offline_sample_interval_seconds: 1800
+  report_interval_seconds: 30
+  housekeeping_interval_seconds: 300
+  max_entries_per_partition: 300
+  max_commit_entries_per_partition: 200
+  offline_detection_consecutive_samples: 3
+  recovering_minimum_duration_seconds: -1
+  online_lag_threshold_seconds: 60
+database:
+  path: "/var/lib/kafka-lag-monitor/lag.db"
+output:
+  json_path: "/var/lib/kafka-lag-monitor/lag.json"
+"""
+    config_file = tmp_path / "config.yaml"
+    config_file.write_text(config_content)
+
+    with pytest.raises(config.ConfigError) as exc_info:
+        config.load_config(str(config_file))
+
+    assert "recovering_minimum_duration_seconds must be >= 0" in str(exc_info.value)

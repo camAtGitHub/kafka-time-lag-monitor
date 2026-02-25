@@ -29,6 +29,14 @@ The StateManager does not write to the database directly. Instead, the sampler c
 
 Reporter and housekeeping threads are pure readers during a sampler cycle and are never blocked by the sampler's writes (thanks to WAL mode).
 
+**Database Error Recovery:** If a worker thread encounters a `sqlite3.DatabaseError` (e.g., database locked, I/O error), it will:
+1. Log the error
+2. Close the broken connection
+3. Create a new connection before the next cycle
+This prevents persistent broken connections from causing indefinite failures.
+
+**Housekeeping Batch Commit:** The housekeeping thread performs all pruning operations (both `partition_offsets` and `consumer_commits`) in a single transaction, then commits once per cycle. This reduces the commit overhead from hundreds of individual commits to a single batch commit.
+
 ### Table Definitions
 
 **`partition_offsets`** — the interpolation table. One row per sample per topic/partition. Not group-scoped — multiple groups consuming the same partition share this data.
@@ -81,21 +89,21 @@ Primary key: `(group_id, topic)`
 
 ### Required Functions
 
-- `init_db(path) -> connection` — create tables if not exist, set pragmas, return connection
+- `init_db(path) -> connection` — create tables if not exist, set pragmas, return connection (caller must close)
 - `get_connection(path) -> connection` — create new connection with timeout and pragmas set
 - `insert_partition_offset(conn, topic, partition, offset, sampled_at)`
 - `insert_consumer_commit(conn, group_id, topic, partition, committed_offset, recorded_at)`
 - `commit_batch(conn)` — explicit commit for batch transaction at end of sampler cycle
-- `get_interpolation_points(conn, topic, partition) -> list[tuple[int, int]]` — returns list of `(offset, sampled_at)` ordered by `sampled_at DESC`
+- `get_interpolation_points(conn, topic, partition) -> list[tuple[int, int]]` — returns list of `(offset, sampled_at)` ordered by `sampled_at DESC`, limited to 1000 most recent rows for memory safety
 - `get_recent_commits(conn, group_id, topic, partition, limit) -> list[tuple[int, int]]` — returns `(committed_offset, recorded_at)` rows
 - `get_last_write_time(conn, topic, partition) -> int | None` — most recent `sampled_at` for this topic/partition
 - `get_group_status(conn, group_id, topic) -> dict | None`
 - `upsert_group_status(conn, group_id, topic, status, status_changed_at, last_advancing_at, consecutive_static)` — **does not commit**; caller must commit
 - `load_all_group_statuses(conn) -> dict` — used at startup to rehydrate state manager
-- `is_topic_excluded(conn, topic, config_exclusions) -> bool`
-- `is_group_excluded(conn, group_id, config_exclusions) -> bool`
-- `prune_partition_offsets(conn, topic, partition, keep_n)` — delete all but most recent `keep_n` rows
-- `prune_consumer_commits(conn, group_id, topic, partition, keep_n)` — same pattern
+- `is_topic_excluded(conn, topic, config_exclusions: Set[str]) -> bool` — checks both config and database exclusions (O(1) lookup)
+- `is_group_excluded(conn, group_id, config_exclusions: Set[str]) -> bool` — checks both config and database exclusions (O(1) lookup)
+- `prune_partition_offsets(conn, topic, partition, keep_n)` — delete all but most recent `keep_n` rows (does not commit)
+- `prune_consumer_commits(conn, group_id, topic, partition, keep_n)` — same pattern (does not commit)
 - `get_all_partition_keys(conn) -> list[tuple[str, int]]` — distinct `(topic, partition)` pairs
 - `get_all_commit_keys(conn) -> list[tuple[str, str, int]]` — distinct `(group_id, topic, partition)` triples
 - `run_incremental_vacuum(conn, pages=100)`

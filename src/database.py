@@ -4,7 +4,7 @@ All SQL operations are isolated here. No other module writes SQL.
 """
 
 import sqlite3
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Optional, List, Dict, Any, Tuple, Set
 
 
 def init_db(path: str) -> sqlite3.Connection:
@@ -165,6 +165,8 @@ def get_interpolation_points(
 ) -> List[Tuple[int, int]]:
     """Get all interpolation points for a topic/partition ordered by sampled_at DESC.
 
+    Returns up to 1000 most recent points as a defensive limit.
+
     Args:
         conn: Database connection
         topic: Topic name
@@ -174,9 +176,10 @@ def get_interpolation_points(
         List of (offset, sampled_at) tuples ordered by sampled_at DESC
     """
     cursor = conn.execute(
-        """SELECT offset, sampled_at FROM partition_offsets 
-           WHERE topic = ? AND partition = ? 
-           ORDER BY sampled_at DESC""",
+        """SELECT offset, sampled_at FROM partition_offsets
+           WHERE topic = ? AND partition = ?
+           ORDER BY sampled_at DESC
+           LIMIT 1000""",
         (topic, partition),
     )
     return [(row[0], row[1]) for row in cursor.fetchall()]
@@ -344,14 +347,14 @@ def load_all_group_statuses(
 
 
 def is_topic_excluded(
-    conn: sqlite3.Connection, topic: str, config_exclusions: List[str]
+    conn: sqlite3.Connection, topic: str, config_exclusions: Set[str]
 ) -> bool:
     """Check if a topic is excluded (in config or database).
 
     Args:
         conn: Database connection
         topic: Topic name
-        config_exclusions: List of excluded topics from config
+        config_exclusions: Set of excluded topics from config
 
     Returns:
         True if topic is excluded
@@ -363,14 +366,14 @@ def is_topic_excluded(
 
 
 def is_group_excluded(
-    conn: sqlite3.Connection, group_id: str, config_exclusions: List[str]
+    conn: sqlite3.Connection, group_id: str, config_exclusions: Set[str]
 ) -> bool:
     """Check if a group is excluded (in config or database).
 
     Args:
         conn: Database connection
         group_id: Consumer group ID
-        config_exclusions: List of excluded groups from config
+        config_exclusions: Set of excluded groups from config
 
     Returns:
         True if group is excluded
@@ -398,17 +401,16 @@ def prune_partition_offsets(
         Number of rows deleted
     """
     cursor = conn.execute(
-        """DELETE FROM partition_offsets 
-           WHERE topic = ? AND partition = ? 
+        """DELETE FROM partition_offsets
+           WHERE topic = ? AND partition = ?
            AND sampled_at NOT IN (
-               SELECT sampled_at FROM partition_offsets 
-               WHERE topic = ? AND partition = ? 
-               ORDER BY sampled_at DESC 
+               SELECT sampled_at FROM partition_offsets
+               WHERE topic = ? AND partition = ?
+               ORDER BY sampled_at DESC
                LIMIT ?
            )""",
         (topic, partition, topic, partition, keep_n),
     )
-    conn.commit()
     return cursor.rowcount
 
 
@@ -428,17 +430,16 @@ def prune_consumer_commits(
         Number of rows deleted
     """
     cursor = conn.execute(
-        """DELETE FROM consumer_commits 
-           WHERE group_id = ? AND topic = ? AND partition = ? 
+        """DELETE FROM consumer_commits
+           WHERE group_id = ? AND topic = ? AND partition = ?
            AND recorded_at NOT IN (
-               SELECT recorded_at FROM consumer_commits 
-               WHERE group_id = ? AND topic = ? AND partition = ? 
-               ORDER BY recorded_at DESC 
+               SELECT recorded_at FROM consumer_commits
+               WHERE group_id = ? AND topic = ? AND partition = ?
+               ORDER BY recorded_at DESC
                LIMIT ?
            )""",
         (group_id, topic, partition, group_id, topic, partition, keep_n),
     )
-    conn.commit()
     return cursor.rowcount
 
 

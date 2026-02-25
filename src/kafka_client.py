@@ -45,6 +45,25 @@ def build_admin_client(config: Config) -> AdminClient:
         "bootstrap.servers": config.kafka.bootstrap_servers,
         "security.protocol": config.kafka.security_protocol,
     }
+
+    # Add optional SASL/TLS configuration if provided
+    if config.kafka.sasl_mechanism:
+        conf["sasl.mechanism"] = config.kafka.sasl_mechanism
+    if config.kafka.sasl_username:
+        conf["sasl.username"] = config.kafka.sasl_username
+    if config.kafka.sasl_password:
+        conf["sasl.password"] = config.kafka.sasl_password
+    if config.kafka.ssl_ca_location:
+        conf["ssl.ca.location"] = config.kafka.ssl_ca_location
+
+    # Warn if security protocol requires SASL but credentials are missing
+    if config.kafka.security_protocol in ("SASL_PLAINTEXT", "SASL_SSL"):
+        if not config.kafka.sasl_mechanism or not config.kafka.sasl_username:
+            logger.warning(
+                f"security_protocol={config.kafka.security_protocol} but SASL credentials "
+                "are incomplete. Configure sasl_mechanism, sasl_username, sasl_password."
+            )
+
     return AdminClient(conf)
 
 

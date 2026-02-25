@@ -5,6 +5,7 @@ Handles CLI arguments, thread lifecycle, signal handling, and clean shutdown.
 
 import argparse
 import logging
+import os
 import signal
 import sys
 import threading
@@ -135,9 +136,19 @@ def main() -> int:
         print(f"ERROR: Invalid configuration: {e}", file=sys.stderr)
         return 1
 
+    # Validate output directory exists
+    output_dir = os.path.dirname(os.path.abspath(cfg.output.json_path)) or "."
+    if not os.path.isdir(output_dir):
+        logger.error(
+            f"Output directory does not exist: {output_dir!r} "
+            f"(from output.json_path: {cfg.output.json_path!r})"
+        )
+        return 1
+
     # Initialize database (creates tables, then we close this connection)
     try:
-        database.init_db(cfg.database.path)
+        init_conn = database.init_db(cfg.database.path)
+        init_conn.close()
         logger.info(f"Database initialized at {cfg.database.path}")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
