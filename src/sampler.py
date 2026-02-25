@@ -452,7 +452,10 @@ class Sampler:
 
             # Get interpolation points
             interpolation_points = database.get_interpolation_points(
-                self._db_conn, topic, partition
+                self._db_conn,
+                topic,
+                partition,
+                self._config.monitoring.max_entries_per_partition,
             )
 
             # Calculate lag

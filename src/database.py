@@ -161,16 +161,18 @@ def commit_batch(conn: sqlite3.Connection) -> None:
 
 
 def get_interpolation_points(
-    conn: sqlite3.Connection, topic: str, partition: int
+    conn: sqlite3.Connection, topic: str, partition: int, limit: int = 500
 ) -> List[Tuple[int, int]]:
-    """Get all interpolation points for a topic/partition ordered by sampled_at DESC.
+    """Get interpolation points for a topic/partition ordered by sampled_at DESC.
 
-    Returns up to 1000 most recent points as a defensive limit.
+    Returns up to `limit` most recent points. Callers should pass
+    max_entries_per_partition from config to align with housekeeping bounds.
 
     Args:
         conn: Database connection
         topic: Topic name
         partition: Partition number
+        limit: Maximum rows to return (default: 500)
 
     Returns:
         List of (offset, sampled_at) tuples ordered by sampled_at DESC
@@ -179,8 +181,8 @@ def get_interpolation_points(
         """SELECT offset, sampled_at FROM partition_offsets
            WHERE topic = ? AND partition = ?
            ORDER BY sampled_at DESC
-           LIMIT 1000""",
-        (topic, partition),
+           LIMIT ?""",
+        (topic, partition, limit),
     )
     return [(row[0], row[1]) for row in cursor.fetchall()]
 

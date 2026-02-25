@@ -23,6 +23,7 @@ def mock_config(tmp_path):
     """Create a mock config with temp output path."""
     config = Mock()
     config.monitoring.report_interval_seconds = 1
+    config.monitoring.max_entries_per_partition = 300
     config.output.json_path = str(tmp_path / "output.json")
     return config
 
