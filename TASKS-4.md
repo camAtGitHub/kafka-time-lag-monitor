@@ -1,335 +1,345 @@
 ---
+# MISSION
+You are a Sparse Priming Representation (SPR) decompressor. An SPR is a particular kind of use of language for advanced NLP, NLU, and NLG tasks, particularly useful for the latest generation Large Language Models (LLMs). Each task list below is written in SPR format. You must fully unpack your task before starting it!
 
-# Fix to be implemented. RE: `_handle_idle_group` Log Storm + Ghost Group Retirement
+# THEORY
+LLMs are a kind of deep neural network. They have been demonstrated to embed knowledge, abilities, and concepts, ranging from reasoning to planning, and even to theory of mind. These are called latent abilities and latent content, collectively referred to as latent space. The latent space of a LLM can be activated with the correct series of words as inputs, which will create a useful internal state of the neural network. This is not unlike how the right shorthand cues can prime a human mind to think in a certain way. Like human minds, LLMs are associative, meaning you only need to use the correct associations to "prime" another model to think in the same way.
 
-## Context and Scope
-
-Two distinct problems, one coherent solution:
-
-1. **Log storm** — `_handle_idle_group` logs WARNING and writes DB every cycle for groups that are already OFFLINE. Fix: only act on state transitions, not on steady-state OFFLINE.
-
-2. **Ghost group accumulation** — Groups completely absent from Kafka (not in `list_consumer_groups` at all) accumulate in the DB forever with no cleanup path. Fix: retire them after a configurable retention period once they have been OFFLINE long enough.
-
-Groups that *are* in Kafka but have no active members (e.g. `cambo` — `Empty` state, shows in `--describe`) are intentionally *not* retired, because an admin may have left them registered deliberately. They benefit from fix 1 (log storm) but not fix 2 (retirement). Retirement is scoped only to groups in `idle_groups_with_history` — the set of groups that do not appear in `get_active_consumer_groups()` at all.
+# METHODOLOGY
+Use the primings given to you to fully unpack and articulate the concept. Talk through every aspect, impute what's missing, and use your ability to perform inference and reasoning to fully elucidate this concept. Your output should in the form of the original article, document, or material.
 
 ---
 
-## Files Modified
+## Context: Open tasks from prior rounds
 
-- `src/config.py` — add `absent_group_retention_seconds` config field
-- `src/database.py` — add `delete_group_data()`
-- `src/state_manager.py` — add `remove_group()`
-- `src/sampler.py` — rewrite `_handle_idle_group()`, add `_retire_ghost_groups()`
-- `config.yaml` and `test_config.yaml` — add new config key
+The following tasks from TASKS-3.md were not completed and remain open. Read their original descriptions in TASKS-3.md before starting. Do not re-implement anything already confirmed fixed by REVIEW-ROUND-3.md or REVIEW-ROUND-4.md.
 
----
-
-## 1. Config — `src/config.py`
-
-### Dataclass
-
-In the `MonitoringConfig` dataclass, add one field after the existing integer fields:
-
-```python
-absent_group_retention_seconds: int = 604800  # 7 days
-```
-
-### Parsing
-
-In the `load_config()` function, in the monitoring section block alongside the other `_get_nested` calls, add:
-
-```python
-absent_group_retention_seconds = _get_nested(
-    monitoring_data,
-    "absent_group_retention_seconds",
-    required=False,
-    default=604800,
-)
-_validate_type(
-    absent_group_retention_seconds, int, "monitoring.absent_group_retention_seconds"
-)
-```
-
-In the `MonitoringConfig(...)` constructor call, add:
-
-```python
-absent_group_retention_seconds=absent_group_retention_seconds,
-```
+| Task | File | Description |
+|------|------|-------------|
+| TASK 32 (residual) | `sampler.py` | Ghost group `partition_offsets` stale — active-in-Kafka but zero-member groups not covered by the idle path |
+| TASK 37 | `sampler.py` | `_get_partitions_for_topic` redundant DB query in `_evaluate_state_machine` |
+| TASK 38 | `main.py` | `init_db` return value discarded |
+| TASK 40 | `config.py` | No range validation on monitoring integer fields |
+| SASL NOTE | `kafka_client.py` | SASL/TLS credentials not forwarded; no startup warning |
 
 ---
 
-## 2. Database — `src/database.py`
+## New Tasks — Round 4
 
-Add this new function. Place it near the other group-related functions (after `get_group_tracked_topics` or similar):
+---
+
+## Implementation Order
+
+Work in this order to minimise risk of interacting changes:
+
+1. **TASK 48** — trivial, isolated, no interactions
+2. **TASK 49** — isolated to `config.py`, no runtime interactions
+3. **TASK 45** — isolated to `main.py` startup path
+4. **TASK 43** — `database.py` + `housekeeping.py`, verify with DB state assertions in tests
+5. **TASK 44** — `sampler.py` state machine, one line + new test
+6. **TASK 42** — `sampler.py`, `reporter.py`, `housekeeping.py` exception handlers
+7. **TASK 46** — type annotation cascade across `config.py` + `database.py` + tests
+8. **TASK 37** (carry-forward) — `sampler.py` refactor, interacts with TASK 32 residual
+9. **TASK 32** (residual carry-forward) — `sampler.py`, after TASK 37 if TASK 37 is done
+10. **TASK 47** — `kafka_client.py` + `config.py` SASL support
+11. **TASK 50** — `database.py` defensive LIMIT, lowest priority
+---
+
+### 🔴 HIGH — TASK 42: Broken DB connection persists across cycles after per-cycle exception
+
+**Files:** `sampler.py`
+
+**Bug:** `self._db_conn` created once in `Sampler.__init__`. The `try/except Exception` in `run()` is a per-cycle handler — it is inside the `while not shutdown_event.is_set()` loop. `run_with_restart` in `main.py` almost never fires; the per-cycle handler is the real error boundary. If a `sqlite3.DatabaseError` fires mid-cycle (disk full, WAL lock timeout, page corruption), the exception is caught, logged as WARNING, and the loop continues — on the same broken connection. SQLite connections do not self-heal after errors. The following cycle uses the same bad connection; all DB operations silently fail or raise again. The monitor appears alive but writes nothing and reads stale data indefinitely.
+
+**Expected outcome:** On a DB exception, the broken connection is closed and replaced with a fresh one before the next cycle runs. The repair is in the `except` block, not at the top of `run()` — that would only help if `run_with_restart` restarted the function, which requires `run()` itself to raise, which the per-cycle handler prevents.
+
+**Implementation:**
 
 ```python
-def delete_group_data(conn: sqlite3.Connection, group_id: str) -> None:
-    """Delete all database records for a consumer group.
+except Exception as e:
+    logger.warning(f"Error during sampler cycle: {e}")
+    if isinstance(e, sqlite3.DatabaseError):
+        logger.warning("DB error detected — reconnecting before next cycle")
+        try:
+            self._db_conn.close()
+        except Exception:
+            pass
+        self._db_conn = database.get_connection(self._db_path)
+```
 
-    Removes rows from consumer_commits and group_status for the given group.
-    Does NOT touch partition_offsets — that table is keyed by topic/partition
-    only and is shared across groups; housekeeping prunes it by row count.
+Add `import sqlite3` at the top of `sampler.py` if not already present. Apply the same pattern to `Reporter` and `Housekeeping` — they each hold a `self._db_conn` created in `__init__` and have a per-cycle exception handler in their own `run()` loops. The fix is identical in structure for all three classes.
 
-    Args:
-        conn: Database connection
-        group_id: Consumer group ID to remove
-    """
-    conn.execute(
-        "DELETE FROM consumer_commits WHERE group_id = ?",
-        (group_id,),
+**Notes:** Do NOT move the reconnect logic to the top of `run()`. That is the wrong call site. The `while` loop never exits normally; `run()` only exits if `shutdown_event` is set or an exception escapes the per-cycle handler, neither of which is the common failure scenario. The reconnect must be in the `except` block so it fires on the cycle that fails. Import `sqlite3` in `sampler.py` for the `isinstance` check — it is already imported in `database.py` but not in `sampler.py`. Write tests: mock DB connection to raise `sqlite3.OperationalError` on first use, assert fresh connection is obtained, assert subsequent cycle succeeds.
+
+---
+
+### 🟠 MEDIUM — TASK 43: Housekeeping prune functions each commit individually — 670 commits per cycle instead of 1
+
+**Files:** `database.py`, `housekeeping.py`
+
+**Bug:** `prune_partition_offsets` and `prune_consumer_commits` each call `conn.commit()` after their `DELETE` statement. Housekeeping calls these in a loop across all (topic, partition) and (group, topic, partition) combinations. With 134 partition-offsets partitions and 536 consumer-commits combos at the target deployment scale, each housekeeping cycle issues 670 individual commits. Each SQLite commit in WAL mode appends WAL frames and may trigger a checkpoint. 670 commits is 670x the necessary write amplification for what is logically a single batch operation.
+
+**Expected outcome:** All prune DELETEs execute within a single transaction committed once at the end of `_run_cycle`. The prune functions become write-only (no commit); the caller owns the transaction boundary. This matches the pattern already established by the sampler's `commit_batch`.
+
+**Implementation — two-part, both required:**
+
+Part 1 — `database.py`: Remove `conn.commit()` from both prune functions. The functions accumulate DELETEs in the open transaction; they do not commit.
+
+```python
+def prune_partition_offsets(conn, topic, partition, keep_n):
+    cursor = conn.execute("""DELETE FROM partition_offsets ...""", ...)
+    # conn.commit() REMOVED — caller commits
+    return cursor.rowcount
+
+def prune_consumer_commits(conn, group_id, topic, partition, keep_n):
+    cursor = conn.execute("""DELETE FROM consumer_commits ...""", ...)
+    # conn.commit() REMOVED — caller commits
+    return cursor.rowcount
+```
+
+Part 2 — `housekeeping.py`: Add a single `database.commit_batch(self._db_conn)` call at the end of `_run_cycle`, after all prune loops and after `run_incremental_vacuum`. Without this, all the DELETEs are rolled back when the connection closes — housekeeping will log correct row counts but prune nothing, silently.
+
+```python
+def _run_cycle(self):
+    # ... existing prune loops (unchanged) ...
+    # ... run_incremental_vacuum (unchanged) ...
+    database.commit_batch(self._db_conn)   # ADD THIS — single commit for all prunes
+    # ... existing log summary ...
+```
+
+**Notes:** `run_incremental_vacuum` executes `PRAGMA incremental_vacuum(N)` which operates independently of the transaction state — safe to call before or after commit. The key invariant is: prune functions accumulate DELETEs; `_run_cycle` commits. This is identical to how the sampler handles its writes. Tests: assert that after a housekeeping cycle, rows are actually deleted from the DB (not just that `rowcount` is returned correctly). The existing tests may pass even with missing commit if they check `rowcount` only — verify they check actual DB state post-prune.
+
+---
+
+### 🟠 MEDIUM — TASK 44: `consecutive_static` not reset when consumer catches up — premature OFFLINE transitions
+
+**Files:** `sampler.py` → `_evaluate_state_machine`
+
+**Bug:** State machine has three mutually exclusive conditions: `all_static_with_lag` (True), `any_advancing` (True), or neither (consumer caught up — no lag, static offsets). The `elif any_advancing` branch resets `consecutive_static = 0`. The neither-branch does nothing — counter retains its previous value. Scenario: consumer is 4 samples into a 5-sample OFFLINE threshold. Producer pauses, consumer catches up, lag goes to zero. Three quiet cycles pass — counter stays at 4. Producer resumes, one cycle of static + lag: counter hits 5 → OFFLINE. The transition fires on a single sample of lag, not five, because the prior accumulation was never cleared. The counter semantics are corrupted: it should track consecutive samples of "static with lag" uninterrupted, but cross-episode accumulation is possible.
+
+**Expected outcome:** `consecutive_static` resets to 0 whenever the consumer is not in the `all_static_with_lag` condition. Both `any_advancing` and the caught-up (neither) path clear the counter. Conservative semantics: threshold samples of uninterrupted stasis + lag are required, not cumulative samples across separated episodes.
+
+**Implementation — one-line change in `_evaluate_state_machine`:**
+
+```python
+if all_static_with_lag:
+    new_consecutive_static = consecutive_static + 1
+    if new_consecutive_static >= threshold:
+        if current_status in ("ONLINE", "RECOVERING"):
+            new_status = "OFFLINE"
+elif any_advancing:
+    new_consecutive_static = 0
+    new_last_advancing_at = current_time
+    # ... RECOVERING/ONLINE transition logic unchanged ...
+else:
+    # Caught up (no lag) or insufficient history — clear counter
+    new_consecutive_static = 0
+```
+
+**Notes:** The `else` branch must only reset `new_consecutive_static`. It must NOT modify `new_last_advancing_at` — the consumer has not advanced (offsets are static), it has merely caught up. Conflating "no lag" with "advancing" would be wrong. Specifically: `any_advancing` requires `len(set(offsets)) != 1` (offsets changing); caught-up is `has_lag == False` with static offsets. The OFFLINE→RECOVERING transition in the `elif any_advancing` branch is untouched — recovery still requires actual offset movement, not just absence of lag. Write a test: pre-load `consecutive_static = threshold - 1`, run one cycle with no lag (caught-up), assert counter resets to 0, assert status remains unchanged. Then run one cycle with lag, assert counter is 1 (not threshold), assert no OFFLINE transition.
+
+---
+
+### 🟠 MEDIUM — TASK 45: Output directory not validated at startup — silent retry loop if path is wrong
+
+**Files:** `main.py`
+
+**Bug:** `output.json_path` is validated as a string in `load_config` but its parent directory is never checked for existence. If the parent directory does not exist, `reporter._write_output` raises `FileNotFoundError` on `open(tmp_path, "w")`. This propagates to `reporter.run`'s `except Exception` handler, which logs a traceback and sleeps 5 seconds before retrying. Since the directory won't create itself, this repeats indefinitely — a tight retry loop generating an exception traceback every 5 seconds for the lifetime of the process, masking the real cause (misconfiguration) under repeated noise.
+
+**Expected outcome:** Startup fails fast with a clear error message if the output directory does not exist. Check is in `main()` after config load, before threads start. Process exits with code 1.
+
+**Implementation — add to `main()` after config is loaded:**
+
+```python
+import os  # already imported in main.py
+
+output_dir = os.path.dirname(os.path.abspath(cfg.output.json_path))
+if not os.path.isdir(output_dir):
+    logger.error(
+        f"Output directory does not exist: {output_dir!r} "
+        f"(from output.json_path: {cfg.output.json_path!r})"
     )
-    conn.execute(
-        "DELETE FROM group_status WHERE group_id = ?",
-        (group_id,),
-    )
-    # Note: caller is responsible for committing the transaction
+    return 1
 ```
 
-No `conn.commit()` inside — the sampler calls `commit_batch()` at the end of the cycle, consistent with the rest of the write path.
+Place this block after `cfg = config_module.load_config(...)` and before `database.init_db(...)`. Order matters: config must be loaded first; the check should happen before any threads are started or resources are allocated.
+
+**Notes:** `os.path.abspath` handles relative paths in `json_path` correctly. `os.path.dirname` on a bare filename (no directory component, e.g. `"output.json"`) returns `""`, and `os.path.isdir("")` returns False on most platforms — this would incorrectly fail for a file in the current working directory. Guard against this: if `output_dir` is empty string, replace with `"."` and re-check. Alternatively: `output_dir = os.path.dirname(os.path.abspath(cfg.output.json_path)) or "."`. Write a test in `test_main.py` or `test_config.py` using a tmp path with a nonexistent parent, assert the process returns exit code 1 and logs an appropriate error.
 
 ---
 
-## 3. StateManager — `src/state_manager.py`
+### 🟡 LOW — TASK 46: Exclusion check uses O(n) list scan — convert to set; update type annotations
 
-Add this method to the `StateManager` class:
+**Files:** `config.py`, `database.py`
 
+**Bug:** `ExcludeConfig.topics` and `.groups` are `List[str]`. `is_topic_excluded` and `is_group_excluded` receive them as `config_exclusions: List[str]` and test membership with `if topic in config_exclusions` — Python `list.__contains__` is O(n). Called once per active group per topic per cycle. At typical scale (4 groups × 16 topics = 64 calls/cycle, 128/minute) this is negligible in absolute terms. The issue is type semantic incorrectness: exclusion lists are sets by definition (unordered, no duplicates meaningful). A `list` admits duplicates silently; a `set` documents intent and is correct by construction.
+
+**Expected outcome:** `ExcludeConfig.topics` and `.groups` stored as `Set[str]`. `is_topic_excluded` and `is_group_excluded` parameter types updated to match. All construction sites updated. O(1) membership test as a side effect.
+
+**Implementation — three locations, all required:**
+
+1. `config.py` — `ExcludeConfig` dataclass:
 ```python
-def remove_group(self, group_id: str) -> None:
-    """Remove all in-memory state for a consumer group.
+from typing import Set  # add to imports
 
-    Called when a ghost group is retired from the database. Clears all
-    (group_id, topic) keys from the in-memory status dict so the group
-    is no longer iterated over or written by persist_group_statuses.
-
-    Args:
-        group_id: Consumer group ID to remove
-    """
-    with self._lock:
-        keys_to_remove = [
-            key for key in self._group_statuses if key[0] == group_id
-        ]
-        for key in keys_to_remove:
-            del self._group_statuses[key]
-        if keys_to_remove:
-            logger.debug(
-                f"Removed in-memory state for retired group {group_id} "
-                f"({len(keys_to_remove)} topic(s))"
-            )
+@dataclass
+class ExcludeConfig:
+    topics: Set[str]   # was List[str]
+    groups: Set[str]   # was List[str]
 ```
+
+2. `config.py` — `load_config` construction:
+```python
+exclude = ExcludeConfig(topics=set(topics), groups=set(groups))
+```
+The `topics` and `groups` local variables remain lists (they're validated element-by-element as lists above), converted to sets at construction.
+
+3. `database.py` — function signatures:
+```python
+from typing import Set  # add to imports
+
+def is_topic_excluded(conn, topic: str, config_exclusions: Set[str]) -> bool: ...
+def is_group_excluded(conn, group_id: str, config_exclusions: Set[str]) -> bool: ...
+```
+
+**Notes:** No changes needed in `sampler.py` call sites — `self._config.exclude.topics` and `.groups` are passed through unchanged; the type change is transparent at runtime. The `_validate_type` calls in `load_config` validate the YAML-parsed value (a list) before conversion — that validation is correct and should not be changed. Any test that constructs `ExcludeConfig(topics=[...], groups=[...])` will still work at runtime (Python accepts any iterable for a `set`-typed field in a dataclass) but should be updated to pass sets for type correctness. Check `src/tests/` for `ExcludeConfig(` and update accordingly.
 
 ---
 
-## 4. Sampler — `src/sampler.py`
+### 🟡 LOW — TASK 47: SASL/TLS credentials not forwarded; no startup warning (carry-forward)
 
-### 4a. Rewrite `_handle_idle_group`
+**Files:** `kafka_client.py`, `config.py`
 
-Replace the entire existing method body. The new version checks current status before acting and only logs/writes on a genuine state transition:
+**Bug (carry-forward from prior rounds):** `build_admin_client` passes only `bootstrap.servers` and `security.protocol` to the confluent-kafka `AdminClient`. If `security_protocol` is `SASL_PLAINTEXT`, `SASL_SSL`, or `SSL`, the client requires additional parameters (`sasl.mechanism`, `sasl.username`, `sasl.password`, `ssl.ca.location`, etc.) that are neither modelled in `KafkaConfig` nor passed. Connection fails at runtime with a low-signal authentication error after a 120-second retry loop. No startup warning exists.
+
+**Minimum viable fix (warning only):** Add a startup warning to `build_admin_client` when `security_protocol` is not `PLAINTEXT`:
 
 ```python
-def _handle_idle_group(self, group_id: str, cycle_start: float) -> None:
-    """Handle a group with no active partitions.
-
-    Checks current state for each tracked topic. Only logs WARNING and
-    writes OFFLINE status on the first cycle the group is detected as idle
-    (i.e. a genuine state transition). Subsequent cycles where the group
-    is already OFFLINE produce a DEBUG log only — no DB write.
-
-    Args:
-        group_id: The consumer group ID
-        cycle_start: Timestamp when the cycle started
-    """
-    has_history = database.has_group_history(self._db_conn, group_id)
-
-    if not has_history:
-        logger.debug(f"No partitions assigned to group {group_id}")
-        return
-
-    tracked_topics = database.get_group_tracked_topics(self._db_conn, group_id)
-    current_time = int(cycle_start)
-
-    for topic in tracked_topics:
-        existing_status = self._state_manager.get_group_status(group_id, topic)
-        current_status = existing_status.get("status", "ONLINE")
-        last_advancing_at = existing_status.get("last_advancing_at", 0)
-
-        if current_status == "OFFLINE":
-            # Already OFFLINE from a previous cycle — steady state, no action needed.
-            # Retirement (if applicable) is handled separately by _retire_ghost_groups.
-            logger.debug(
-                f"Group {group_id}/{topic} remains OFFLINE (no active partitions)"
-            )
-            continue
-
-        # This is a genuine transition: group was ONLINE or RECOVERING and has
-        # now lost all partitions. Log once and write the status change.
+def build_admin_client(config: Config) -> AdminClient:
+    if config.kafka.security_protocol != "PLAINTEXT":
         logger.warning(
-            f"Group {group_id} has no active partitions but has DB history "
-            f"for topic '{topic}'. Transitioning {current_status} -> OFFLINE."
+            f"security_protocol is '{config.kafka.security_protocol}' but SASL/TLS "
+            f"parameters (sasl_mechanism, sasl_username, sasl_password, ssl_ca_location) "
+            f"are not yet supported by this build. Connection will likely fail at "
+            f"authentication. Set security_protocol: PLAINTEXT or extend KafkaConfig."
         )
-        self._state_manager.set_group_status(
-            group_id,
-            topic,
-            "OFFLINE",
-            current_time,
-            last_advancing_at,
-            self._config.monitoring.offline_detection_consecutive_samples,
-        )
+    conf = {
+        "bootstrap.servers": config.kafka.bootstrap_servers,
+        "security.protocol": config.kafka.security_protocol,
+    }
+    return AdminClient(conf)
 ```
 
-**Key behavioural changes from current:**
-- Per-topic iteration with individual status checks (current code does one WARNING for all topics combined, then writes all — new code logs the transition per topic, which is more precise and consistent with how the state machine works everywhere else)
-- Already-OFFLINE topics: no WARNING, no DB write, DEBUG only
-- Transitioning topics: WARNING once, write once
-
-### 4b. Add `_retire_ghost_groups`
-
-Add this new method to the `Sampler` class:
+**Full fix (preferred):** Extend `KafkaConfig` with optional SASL/TLS fields and pass them conditionally:
 
 ```python
-def _retire_ghost_groups(
-    self, idle_groups_with_history: set, cycle_start: float
-) -> None:
-    """Retire groups that are absent from Kafka and have been OFFLINE long enough.
-
-    Only called for groups in idle_groups_with_history — the set of groups
-    that do not appear in get_active_consumer_groups() at all. Groups that
-    ARE in Kafka (even with no active members / Empty state) are not retired
-    here; their lifecycle is managed by the Kafka administrator.
-
-    A group is retired when ALL of the following are true:
-      - It is absent from Kafka entirely (in idle_groups_with_history)
-      - Every tracked topic for the group has status OFFLINE
-      - The earliest status_changed_at across all topics is older than
-        absent_group_retention_seconds
-
-    On retirement:
-      - All consumer_commits rows for the group are deleted
-      - All group_status rows for the group are deleted
-      - In-memory state is cleared via state_manager.remove_group()
-      - An INFO log is emitted with the group ID and how long it was OFFLINE
-
-    partition_offsets is NOT cleaned up here — it is keyed by topic/partition
-    only and shared across groups. Housekeeping prunes it by row count naturally.
-
-    Args:
-        idle_groups_with_history: Set of group IDs absent from Kafka but with
-                                  historical data in the database
-        cycle_start: Timestamp when the cycle started
-    """
-    retention = self._config.monitoring.absent_group_retention_seconds
-    current_time = int(cycle_start)
-
-    for group_id in idle_groups_with_history:
-        tracked_topics = database.get_group_tracked_topics(
-            self._db_conn, group_id
-        )
-
-        if not tracked_topics:
-            continue
-
-        # All topics must be OFFLINE, and we find the earliest OFFLINE timestamp
-        should_retire = True
-        earliest_offline_at = current_time
-
-        for topic in tracked_topics:
-            status = self._state_manager.get_group_status(group_id, topic)
-
-            if status.get("status") != "OFFLINE":
-                # Group has a topic not yet OFFLINE — not ready for retirement.
-                # This can happen on the same cycle _handle_idle_group transitions
-                # it, since retirement runs after idle handling.
-                should_retire = False
-                break
-
-            topic_offline_since = status.get("status_changed_at", current_time)
-            earliest_offline_at = min(earliest_offline_at, topic_offline_since)
-
-        if not should_retire:
-            continue
-
-        time_offline_seconds = current_time - earliest_offline_at
-
-        if time_offline_seconds < retention:
-            logger.debug(
-                f"Ghost group {group_id} has been OFFLINE for "
-                f"{time_offline_seconds // 3600:.1f}h — "
-                f"retention period is {retention // 3600:.1f}h, not retiring yet."
-            )
-            continue
-
-        # Retention period exceeded — retire the group
-        logger.info(
-            f"Retiring ghost group '{group_id}': absent from Kafka, "
-            f"OFFLINE for {time_offline_seconds // 3600:.1f}h "
-            f"(retention threshold: {retention // 3600:.1f}h). "
-            f"Removing from database. Topics were: {tracked_topics}"
-        )
-
-        database.delete_group_data(self._db_conn, group_id)
-        self._state_manager.remove_group(group_id)
+@dataclass
+class KafkaConfig:
+    bootstrap_servers: str
+    security_protocol: str = "PLAINTEXT"
+    sasl_mechanism: Optional[str] = None
+    sasl_username: Optional[str] = None
+    sasl_password: Optional[str] = None
+    ssl_ca_location: Optional[str] = None
 ```
 
-### 4c. Wire `_retire_ghost_groups` into the run loop
+In `build_admin_client`, conditionally add keys:
+```python
+if config.kafka.sasl_mechanism:
+    conf["sasl.mechanism"] = config.kafka.sasl_mechanism
+if config.kafka.sasl_username:
+    conf["sasl.username"] = config.kafka.sasl_username
+if config.kafka.sasl_password:
+    conf["sasl.password"] = config.kafka.sasl_password
+if config.kafka.ssl_ca_location:
+    conf["ssl.ca.location"] = config.kafka.ssl_ca_location
+```
 
-In `run()`, after the existing Step 3c block, add Step 3d immediately after:
+Add corresponding optional parsing in `load_config` (not required, defaults to None). Do not raise `ConfigError` if SASL fields are absent when `security_protocol` is non-PLAINTEXT — that is a runtime concern handled by the client. Log a warning if protocol is non-PLAINTEXT and SASL fields are None.
+
+**Notes:** Do not log `sasl_password` value in any log output. Minimum viable fix is acceptable for immediate deployment; full fix is preferred if SASL is needed in the near term.
+
+---
+
+### 🟡 LOW — TASK 48: `init_db` return value discarded — connection leaks to GC (carry-forward)
+
+**Files:** `main.py`
+
+**Bug (carry-forward from TASKS-3.md TASK 38):** `database.init_db(cfg.database.path)` returns a `sqlite3.Connection` that is silently discarded. Connection is closed by CPython reference counting, but the pattern implies `init_db` is void. Any developer reading `main.py` may assume `init_db` has no meaningful return value and that pattern is not to be followed.
+
+**Fix:** Close explicitly:
 
 ```python
-                # Step 3c: Mark idle groups as OFFLINE (transition only — no repeat writes)
-                for group_id in idle_groups_with_history:
-                    self._handle_idle_group(group_id, cycle_start)
-
-                # Step 3d: Retire ghost groups (absent from Kafka past retention period)
-                self._retire_ghost_groups(idle_groups_with_history, cycle_start)
+init_conn = database.init_db(cfg.database.path)
+init_conn.close()
+logger.info(f"Database initialized at {cfg.database.path}")
 ```
 
-No other changes to the run loop are needed.
+Or restructure `init_db` to close internally and return `None`. If restructuring: verify no caller uses the returned connection (currently none do).
 
 ---
 
-## 5. Config Files
+### 🟡 LOW — TASK 49: No range validation on monitoring config integer values (carry-forward)
 
-### `config.yaml`
+**Files:** `config.py`
 
-Add under the `monitoring:` block, alongside the other interval settings:
+**Bug (carry-forward from TASKS-3.md TASK 40):** All `MonitoringConfig` integer fields accept any value including zero and negative. `sample_interval_seconds=0` causes `sleep_time` to always be negative → sampler busy-loops at full CPU, hammering Kafka and SQLite. `max_entries_per_partition=0` causes `prune_partition_offsets` to delete all rows, destroying interpolation history. `offline_detection_consecutive_samples=0` causes immediate OFFLINE for all new groups. No `ConfigError` is raised.
 
-```yaml
-monitoring:
-  # ... existing fields ...
-  absent_group_retention_seconds: 604800   # 7 days. Ghost groups (absent from Kafka entirely)
-                                            # are removed from the database after being OFFLINE
-                                            # for this long. Set to 0 to disable retirement.
+**Fix:** Add post-parse range validation in `load_config` for the following fields and constraints:
+
+```python
+# After all integer fields are parsed, before constructing MonitoringConfig:
+if sample_interval_seconds <= 0:
+    raise ConfigError("monitoring.sample_interval_seconds must be > 0")
+if offline_sample_interval_seconds < sample_interval_seconds:
+    raise ConfigError(
+        "monitoring.offline_sample_interval_seconds must be >= sample_interval_seconds"
+    )
+if report_interval_seconds <= 0:
+    raise ConfigError("monitoring.report_interval_seconds must be > 0")
+if housekeeping_interval_seconds <= 0:
+    raise ConfigError("monitoring.housekeeping_interval_seconds must be > 0")
+if max_entries_per_partition < 2:
+    raise ConfigError("monitoring.max_entries_per_partition must be >= 2")
+if max_commit_entries_per_partition < 2:
+    raise ConfigError("monitoring.max_commit_entries_per_partition must be >= 2")
+if offline_detection_consecutive_samples < 1:
+    raise ConfigError("monitoring.offline_detection_consecutive_samples must be >= 1")
+if recovering_minimum_duration_seconds < 0:
+    raise ConfigError("monitoring.recovering_minimum_duration_seconds must be >= 0")
+if online_lag_threshold_seconds < 0:
+    raise ConfigError("monitoring.online_lag_threshold_seconds must be >= 0")
+if absent_group_retention_seconds <= 0:
+    raise ConfigError("monitoring.absent_group_retention_seconds must be > 0")
 ```
 
-### `test_config.yaml`
-
-Add the same key with a short value suitable for tests:
-
-```yaml
-monitoring:
-  # ... existing fields ...
-  absent_group_retention_seconds: 3600    # 1 hour for test config
-```
+**Notes:** `max_entries_per_partition >= 2` (not 1) because interpolation requires at least two distinct points to bracket a committed offset. A value of 1 would mean at most one row per partition — interpolation always extrapolates, lag is always inaccurate. Write tests for each constraint: one test per invalid value asserting `ConfigError` is raised with a meaningful message.
 
 ---
 
-## Interaction Between the Two Fixes
+### 🟡 LOW — TASK 50: `get_interpolation_points` — add defensive LIMIT equal to `max_entries_per_partition`
 
-The two fixes are designed to chain correctly within a single cycle:
+**Files:** `database.py`
 
-1. **Step 3c** calls `_handle_idle_group` for every group in `idle_groups_with_history`. For a brand-new ghost group, this transitions it to OFFLINE and logs WARNING. For an already-OFFLINE group, it logs DEBUG and does nothing.
+**Context:** Housekeeping bounds `partition_offsets` row count to `max_entries_per_partition` (default 300). The `get_interpolation_points` query has no LIMIT — in normal operation, housekeeping keeps the table bounded and this is not a production risk. The concern is a timing window (rows accumulate between housekeeping cycles) and a misconfiguration risk (if `max_entries_per_partition` is set very high, TASK 49 does not cap it). This is defensive hardening, not a fix for an active bug.
 
-2. **Step 3d** calls `_retire_ghost_groups` for the same set. For a group that was *just* transitioned to OFFLINE in 3c, `status_changed_at` is set to `current_time`, so `time_offline_seconds` will be ~0 and it will not be retired this cycle. The INFO log explaining retirement doesn't fire until the retention period has elapsed in a future cycle. There is no race.
+**Fix:** Add `LIMIT` to the query equal to the configured maximum. Since `database.py` functions do not receive config, the simplest approach is a caller-supplied `limit` parameter with a safe default:
 
-3. Once `delete_group_data` and `remove_group` are called, the group disappears from `consumer_commits` and `group_status`. On the next cycle, `get_all_groups_with_history` will no longer return it (since that queries `consumer_commits`), so it won't appear in `idle_groups_with_history` and neither `_handle_idle_group` nor `_retire_ghost_groups` will be called for it again. Clean exit.
+```python
+def get_interpolation_points(
+    conn: sqlite3.Connection, topic: str, partition: int, limit: int = 500
+) -> List[Tuple[int, int]]:
+    cursor = conn.execute(
+        """SELECT offset, sampled_at FROM partition_offsets
+           WHERE topic = ? AND partition = ?
+           ORDER BY sampled_at DESC
+           LIMIT ?""",
+        (topic, partition, limit),
+    )
+    return [(row[0], row[1]) for row in cursor.fetchall()]
+```
 
----
+Update callers in `sampler.py` and `reporter.py` to pass `self._config.monitoring.max_entries_per_partition` as the limit. Default of 500 provides safety for callers that do not pass a limit.
 
-## Behaviour Summary After Fix
+**Notes:** This is the lowest priority task in this round. Do not prioritise it above TASK 42–45. The interpolation algorithm only needs two bracketing rows but the current implementation fetches all rows and scans them — refactoring to a two-query fetch (one row above, one below the committed offset) would be a more correct fix but is a larger change and out of scope here.
 
-| Scenario | Before fix | After fix |
-|---|---|---|
-| Group transitions to OFFLINE (first idle cycle) | WARNING + DB write | WARNING + DB write (unchanged) |
-| Group already OFFLINE, subsequent cycles | WARNING + DB write every 30s | DEBUG only, no DB write |
-| Ghost group absent from Kafka < retention period | WARNING every 30s, forever | DEBUG only |
-| Ghost group absent from Kafka ≥ retention period | WARNING every 30s, forever | INFO once, then deleted from DB — gone |
-| Group in Kafka, Empty state (e.g. `cambo`) | WARNING every 30s | DEBUG only after first transition |

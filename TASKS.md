@@ -1,334 +1,164 @@
----
-# MISSION
-You are a Sparse Priming Representation (SPR) decompressor. An SPR is a particular kind of use of language for advanced NLP, NLU, and NLG tasks, particularly useful for the latest generation Large Language Models (LLMs). Each task list below is written in SPR format. You must fully unpack your task before starting it!
+# TASKS.md
 
-# THEORY
-LLMs are a kind of deep neural network. They have been demonstrated to embed knowledge, abilities, and concepts, ranging from reasoning to planning, and even to theory of mind. These are called latent abilities and latent content, collectively referred to as latent space. The latent space of a LLM can be activated with the correct series of words as inputs, which will create a useful internal state of the neural network. This is not unlike how the right shorthand cues can prime a human mind to think in a certain way. Like human minds, LLMs are associative, meaning you only need to use the correct associations to "prime" another model to think in the same way.
+## MISSION
+Continue the kafka-time-lag-monitor code review series. This file addresses:
+- A new bug found in the main thread shutdown path (TASK 51)
+- A clean resolution of the partial TASK 50 implementation (TASK 52)
+- Missing test coverage identified during the TASKS-4 post-implementation review (TASKS 53–59)
 
-# METHODOLOGY
-Use the primings given to you to fully unpack and articulate the concept. Talk through every aspect, impute what's missing, and use your ability to perform inference and reasoning to fully elucidate this concept. Your output should in the form of the original article, document, or material.
+MISSION: Implement ALL of the fixes and tests in a way that guards against regression of these issues in the future, with a focus on the critical shutdown delay bug.
 
----
-
-## Context: Open tasks from prior rounds
-
-The following tasks from TASKS-3.md were not completed and remain open. Read their original descriptions in TASKS-3.md before starting. Do not re-implement anything already confirmed fixed by REVIEW-ROUND-3.md or REVIEW-ROUND-4.md.
-
-| Task | File | Description |
-|------|------|-------------|
-| TASK 32 (residual) | `sampler.py` | Ghost group `partition_offsets` stale — active-in-Kafka but zero-member groups not covered by the idle path |
-| TASK 37 | `sampler.py` | `_get_partitions_for_topic` redundant DB query in `_evaluate_state_machine` |
-| TASK 38 | `main.py` | `init_db` return value discarded |
-| TASK 40 | `config.py` | No range validation on monitoring integer fields |
-| SASL NOTE | `kafka_client.py` | SASL/TLS credentials not forwarded; no startup warning |
-
----
-
-## New Tasks — Round 4
+## METHODOLOGY
+Tasks are ordered lowest-risk/most-isolated first. Test tasks (53–59) are independent of each
+other and can be worked in any order once TASK 51 and 52 are complete.
 
 ---
 
 ## Implementation Order
 
-Work in this order to minimise risk of interacting changes:
+1. **TASK 51** — shutdown bug, `main.py` only, zero interactions
+2. **TASK 52** — `database.py` + two call sites, low interaction
+3. **TASK 53–59** — new tests, any order, no production code changes
 
-1. **TASK 48** — trivial, isolated, no interactions
-2. **TASK 49** — isolated to `config.py`, no runtime interactions
-3. **TASK 45** — isolated to `main.py` startup path
-4. **TASK 43** — `database.py` + `housekeeping.py`, verify with DB state assertions in tests
-5. **TASK 44** — `sampler.py` state machine, one line + new test
-6. **TASK 42** — `sampler.py`, `reporter.py`, `housekeeping.py` exception handlers
-7. **TASK 46** — type annotation cascade across `config.py` + `database.py` + tests
-8. **TASK 37** (carry-forward) — `sampler.py` refactor, interacts with TASK 32 residual
-9. **TASK 32** (residual carry-forward) — `sampler.py`, after TASK 37 if TASK 37 is done
-10. **TASK 47** — `kafka_client.py` + `config.py` SASL support
-11. **TASK 50** — `database.py` defensive LIMIT, lowest priority
 ---
 
-### 🔴 HIGH — TASK 42: Broken DB connection persists across cycles after per-cycle exception
+## 🔴 HIGH — TASK 51: `time.sleep(30)` in main heartbeat does not respond to shutdown — causes 21–25s delay on Ctrl-C
 
-**Files:** `sampler.py`
+**File:** `main.py`
 
-**Bug:** `self._db_conn` created once in `Sampler.__init__`. The `try/except Exception` in `run()` is a per-cycle handler — it is inside the `while not shutdown_event.is_set()` loop. `run_with_restart` in `main.py` almost never fires; the per-cycle handler is the real error boundary. If a `sqlite3.DatabaseError` fires mid-cycle (disk full, WAL lock timeout, page corruption), the exception is caught, logged as WARNING, and the loop continues — on the same broken connection. SQLite connections do not self-heal after errors. The following cycle uses the same bad connection; all DB operations silently fail or raise again. The monitor appears alive but writes nothing and reads stale data indefinitely.
+**Root cause (PEP 475):**
+Python 3.5+ introduced PEP 475, which causes interrupted system calls to be automatically
+*retried* after a signal handler returns. `time.sleep()` is implemented as a loop over
+`clock_nanosleep()` / `select()`. When `^C` fires:
 
-**Expected outcome:** On a DB exception, the broken connection is closed and replaced with a fresh one before the next cycle runs. The repair is in the `except` block, not at the top of `run()` — that would only help if `run_with_restart` restarted the function, which requires `run()` itself to raise, which the per-cycle handler prevents.
+1. The OS delivers SIGINT to the main thread.
+2. The low-level sleep syscall returns `EINTR`.
+3. Python runs the custom signal handler (`handle_signal`), which sets `shutdown_event`.
+4. **PEP 475 behaviour:** Python calculates the remaining sleep duration and *restarts the
+   sleep syscall* for that duration, because no Python-level exception was raised.
+5. The main thread stays blocked in `time.sleep()` for the rest of its 30-second window
+   even though `shutdown_event` is already set.
+
+The worker threads (`sampler`, `reporter`, `housekeeping`) all use `shutdown_event.wait()` for
+their inter-cycle sleeps, so they wake and exit as soon as the event is set. However, the main
+thread cannot reach the `join()` loop until `time.sleep(30)` finally returns. On a production
+deployment where `^C` arrives uniformly across the 30-second window, the expected remaining
+sleep is 15 seconds. The observed 21–25s range is consistent with `^C` arriving 5–9 seconds
+into the current 30-second sleep (30 − 5 = 25, 30 − 9 = 21).
+
+`threading.Event.wait()` is *not* subject to PEP 475 resume behaviour because it is
+implemented at the Python level using a `Condition` variable. When `shutdown_event.set()` is
+called from the signal handler, the condition notifies any waiting threads and
+`shutdown_event.wait()` returns `True` on the very next check — typically within milliseconds.
+
+**Expected outcome:** After `^C`, the process shuts down within 1–3 seconds under normal
+operating conditions (threads sleeping between cycles). Under worst-case conditions (a thread
+mid-Kafka-call at shutdown time), shutdown completes within one Kafka request timeout plus a
+small margin, rather than 21–25+ seconds.
 
 **Implementation:**
 
-```python
-except Exception as e:
-    logger.warning(f"Error during sampler cycle: {e}")
-    if isinstance(e, sqlite3.DatabaseError):
-        logger.warning("DB error detected — reconnecting before next cycle")
-        try:
-            self._db_conn.close()
-        except Exception:
-            pass
-        self._db_conn = database.get_connection(self._db_path)
-```
-
-Add `import sqlite3` at the top of `sampler.py` if not already present. Apply the same pattern to `Reporter` and `Housekeeping` — they each hold a `self._db_conn` created in `__init__` and have a per-cycle exception handler in their own `run()` loops. The fix is identical in structure for all three classes.
-
-**Notes:** Do NOT move the reconnect logic to the top of `run()`. That is the wrong call site. The `while` loop never exits normally; `run()` only exits if `shutdown_event` is set or an exception escapes the per-cycle handler, neither of which is the common failure scenario. The reconnect must be in the `except` block so it fires on the cycle that fails. Import `sqlite3` in `sampler.py` for the `isinstance` check — it is already imported in `database.py` but not in `sampler.py`. Write tests: mock DB connection to raise `sqlite3.OperationalError` on first use, assert fresh connection is obtained, assert subsequent cycle succeeds.
-
----
-
-### 🟠 MEDIUM — TASK 43: Housekeeping prune functions each commit individually — 670 commits per cycle instead of 1
-
-**Files:** `database.py`, `housekeeping.py`
-
-**Bug:** `prune_partition_offsets` and `prune_consumer_commits` each call `conn.commit()` after their `DELETE` statement. Housekeeping calls these in a loop across all (topic, partition) and (group, topic, partition) combinations. With 134 partition-offsets partitions and 536 consumer-commits combos at the target deployment scale, each housekeeping cycle issues 670 individual commits. Each SQLite commit in WAL mode appends WAL frames and may trigger a checkpoint. 670 commits is 670x the necessary write amplification for what is logically a single batch operation.
-
-**Expected outcome:** All prune DELETEs execute within a single transaction committed once at the end of `_run_cycle`. The prune functions become write-only (no commit); the caller owns the transaction boundary. This matches the pattern already established by the sampler's `commit_batch`.
-
-**Implementation — two-part, both required:**
-
-Part 1 — `database.py`: Remove `conn.commit()` from both prune functions. The functions accumulate DELETEs in the open transaction; they do not commit.
+Replace the `time.sleep(30)` in `main()`'s heartbeat loop with `shutdown_event.wait(timeout=30)`:
 
 ```python
-def prune_partition_offsets(conn, topic, partition, keep_n):
-    cursor = conn.execute("""DELETE FROM partition_offsets ...""", ...)
-    # conn.commit() REMOVED — caller commits
-    return cursor.rowcount
-
-def prune_consumer_commits(conn, group_id, topic, partition, keep_n):
-    cursor = conn.execute("""DELETE FROM consumer_commits ...""", ...)
-    # conn.commit() REMOVED — caller commits
-    return cursor.rowcount
-```
-
-Part 2 — `housekeeping.py`: Add a single `database.commit_batch(self._db_conn)` call at the end of `_run_cycle`, after all prune loops and after `run_incremental_vacuum`. Without this, all the DELETEs are rolled back when the connection closes — housekeeping will log correct row counts but prune nothing, silently.
-
-```python
-def _run_cycle(self):
-    # ... existing prune loops (unchanged) ...
-    # ... run_incremental_vacuum (unchanged) ...
-    database.commit_batch(self._db_conn)   # ADD THIS — single commit for all prunes
-    # ... existing log summary ...
-```
-
-**Notes:** `run_incremental_vacuum` executes `PRAGMA incremental_vacuum(N)` which operates independently of the transaction state — safe to call before or after commit. The key invariant is: prune functions accumulate DELETEs; `_run_cycle` commits. This is identical to how the sampler handles its writes. Tests: assert that after a housekeeping cycle, rows are actually deleted from the DB (not just that `rowcount` is returned correctly). The existing tests may pass even with missing commit if they check `rowcount` only — verify they check actual DB state post-prune.
-
----
-
-### 🟠 MEDIUM — TASK 44: `consecutive_static` not reset when consumer catches up — premature OFFLINE transitions
-
-**Files:** `sampler.py` → `_evaluate_state_machine`
-
-**Bug:** State machine has three mutually exclusive conditions: `all_static_with_lag` (True), `any_advancing` (True), or neither (consumer caught up — no lag, static offsets). The `elif any_advancing` branch resets `consecutive_static = 0`. The neither-branch does nothing — counter retains its previous value. Scenario: consumer is 4 samples into a 5-sample OFFLINE threshold. Producer pauses, consumer catches up, lag goes to zero. Three quiet cycles pass — counter stays at 4. Producer resumes, one cycle of static + lag: counter hits 5 → OFFLINE. The transition fires on a single sample of lag, not five, because the prior accumulation was never cleared. The counter semantics are corrupted: it should track consecutive samples of "static with lag" uninterrupted, but cross-episode accumulation is possible.
-
-**Expected outcome:** `consecutive_static` resets to 0 whenever the consumer is not in the `all_static_with_lag` condition. Both `any_advancing` and the caught-up (neither) path clear the counter. Conservative semantics: threshold samples of uninterrupted stasis + lag are required, not cumulative samples across separated episodes.
-
-**Implementation — one-line change in `_evaluate_state_machine`:**
-
-```python
-if all_static_with_lag:
-    new_consecutive_static = consecutive_static + 1
-    if new_consecutive_static >= threshold:
-        if current_status in ("ONLINE", "RECOVERING"):
-            new_status = "OFFLINE"
-elif any_advancing:
-    new_consecutive_static = 0
-    new_last_advancing_at = current_time
-    # ... RECOVERING/ONLINE transition logic unchanged ...
-else:
-    # Caught up (no lag) or insufficient history — clear counter
-    new_consecutive_static = 0
-```
-
-**Notes:** The `else` branch must only reset `new_consecutive_static`. It must NOT modify `new_last_advancing_at` — the consumer has not advanced (offsets are static), it has merely caught up. Conflating "no lag" with "advancing" would be wrong. Specifically: `any_advancing` requires `len(set(offsets)) != 1` (offsets changing); caught-up is `has_lag == False` with static offsets. The OFFLINE→RECOVERING transition in the `elif any_advancing` branch is untouched — recovery still requires actual offset movement, not just absence of lag. Write a test: pre-load `consecutive_static = threshold - 1`, run one cycle with no lag (caught-up), assert counter resets to 0, assert status remains unchanged. Then run one cycle with lag, assert counter is 1 (not threshold), assert no OFFLINE transition.
-
----
-
-### 🟠 MEDIUM — TASK 45: Output directory not validated at startup — silent retry loop if path is wrong
-
-**Files:** `main.py`
-
-**Bug:** `output.json_path` is validated as a string in `load_config` but its parent directory is never checked for existence. If the parent directory does not exist, `reporter._write_output` raises `FileNotFoundError` on `open(tmp_path, "w")`. This propagates to `reporter.run`'s `except Exception` handler, which logs a traceback and sleeps 5 seconds before retrying. Since the directory won't create itself, this repeats indefinitely — a tight retry loop generating an exception traceback every 5 seconds for the lifetime of the process, masking the real cause (misconfiguration) under repeated noise.
-
-**Expected outcome:** Startup fails fast with a clear error message if the output directory does not exist. Check is in `main()` after config load, before threads start. Process exits with code 1.
-
-**Implementation — add to `main()` after config is loaded:**
-
-```python
-import os  # already imported in main.py
-
-output_dir = os.path.dirname(os.path.abspath(cfg.output.json_path))
-if not os.path.isdir(output_dir):
-    logger.error(
-        f"Output directory does not exist: {output_dir!r} "
-        f"(from output.json_path: {cfg.output.json_path!r})"
-    )
-    return 1
-```
-
-Place this block after `cfg = config_module.load_config(...)` and before `database.init_db(...)`. Order matters: config must be loaded first; the check should happen before any threads are started or resources are allocated.
-
-**Notes:** `os.path.abspath` handles relative paths in `json_path` correctly. `os.path.dirname` on a bare filename (no directory component, e.g. `"output.json"`) returns `""`, and `os.path.isdir("")` returns False on most platforms — this would incorrectly fail for a file in the current working directory. Guard against this: if `output_dir` is empty string, replace with `"."` and re-check. Alternatively: `output_dir = os.path.dirname(os.path.abspath(cfg.output.json_path)) or "."`. Write a test in `test_main.py` or `test_config.py` using a tmp path with a nonexistent parent, assert the process returns exit code 1 and logs an appropriate error.
-
----
-
-### 🟡 LOW — TASK 46: Exclusion check uses O(n) list scan — convert to set; update type annotations
-
-**Files:** `config.py`, `database.py`
-
-**Bug:** `ExcludeConfig.topics` and `.groups` are `List[str]`. `is_topic_excluded` and `is_group_excluded` receive them as `config_exclusions: List[str]` and test membership with `if topic in config_exclusions` — Python `list.__contains__` is O(n). Called once per active group per topic per cycle. At typical scale (4 groups × 16 topics = 64 calls/cycle, 128/minute) this is negligible in absolute terms. The issue is type semantic incorrectness: exclusion lists are sets by definition (unordered, no duplicates meaningful). A `list` admits duplicates silently; a `set` documents intent and is correct by construction.
-
-**Expected outcome:** `ExcludeConfig.topics` and `.groups` stored as `Set[str]`. `is_topic_excluded` and `is_group_excluded` parameter types updated to match. All construction sites updated. O(1) membership test as a side effect.
-
-**Implementation — three locations, all required:**
-
-1. `config.py` — `ExcludeConfig` dataclass:
-```python
-from typing import Set  # add to imports
-
-@dataclass
-class ExcludeConfig:
-    topics: Set[str]   # was List[str]
-    groups: Set[str]   # was List[str]
-```
-
-2. `config.py` — `load_config` construction:
-```python
-exclude = ExcludeConfig(topics=set(topics), groups=set(groups))
-```
-The `topics` and `groups` local variables remain lists (they're validated element-by-element as lists above), converted to sets at construction.
-
-3. `database.py` — function signatures:
-```python
-from typing import Set  # add to imports
-
-def is_topic_excluded(conn, topic: str, config_exclusions: Set[str]) -> bool: ...
-def is_group_excluded(conn, group_id: str, config_exclusions: Set[str]) -> bool: ...
-```
-
-**Notes:** No changes needed in `sampler.py` call sites — `self._config.exclude.topics` and `.groups` are passed through unchanged; the type change is transparent at runtime. The `_validate_type` calls in `load_config` validate the YAML-parsed value (a list) before conversion — that validation is correct and should not be changed. Any test that constructs `ExcludeConfig(topics=[...], groups=[...])` will still work at runtime (Python accepts any iterable for a `set`-typed field in a dataclass) but should be updated to pass sets for type correctness. Check `src/tests/` for `ExcludeConfig(` and update accordingly.
-
----
-
-### 🟡 LOW — TASK 47: SASL/TLS credentials not forwarded; no startup warning (carry-forward)
-
-**Files:** `kafka_client.py`, `config.py`
-
-**Bug (carry-forward from prior rounds):** `build_admin_client` passes only `bootstrap.servers` and `security.protocol` to the confluent-kafka `AdminClient`. If `security_protocol` is `SASL_PLAINTEXT`, `SASL_SSL`, or `SSL`, the client requires additional parameters (`sasl.mechanism`, `sasl.username`, `sasl.password`, `ssl.ca.location`, etc.) that are neither modelled in `KafkaConfig` nor passed. Connection fails at runtime with a low-signal authentication error after a 120-second retry loop. No startup warning exists.
-
-**Minimum viable fix (warning only):** Add a startup warning to `build_admin_client` when `security_protocol` is not `PLAINTEXT`:
-
-```python
-def build_admin_client(config: Config) -> AdminClient:
-    if config.kafka.security_protocol != "PLAINTEXT":
-        logger.warning(
-            f"security_protocol is '{config.kafka.security_protocol}' but SASL/TLS "
-            f"parameters (sasl_mechanism, sasl_username, sasl_password, ssl_ca_location) "
-            f"are not yet supported by this build. Connection will likely fail at "
-            f"authentication. Set security_protocol: PLAINTEXT or extend KafkaConfig."
+# BEFORE
+try:
+    while not shutdown_event.is_set():
+        time.sleep(30)
+        sampler_last = state_mgr.get_thread_last_run("sampler")
+        reporter_last = state_mgr.get_thread_last_run("reporter")
+        housekeeping_last = state_mgr.get_thread_last_run("housekeeping")
+        logger.debug(
+            f"Heartbeat: sampler={sampler_last}, "
+            f"reporter={reporter_last}, housekeeping={housekeeping_last}"
         )
-    conf = {
-        "bootstrap.servers": config.kafka.bootstrap_servers,
-        "security.protocol": config.kafka.security_protocol,
-    }
-    return AdminClient(conf)
+except KeyboardInterrupt:
+    logger.info("Keyboard interrupt received")
+    shutdown_event.set()
+
+# AFTER
+try:
+    while not shutdown_event.wait(timeout=30):
+        sampler_last = state_mgr.get_thread_last_run("sampler")
+        reporter_last = state_mgr.get_thread_last_run("reporter")
+        housekeeping_last = state_mgr.get_thread_last_run("housekeeping")
+        logger.debug(
+            f"Heartbeat: sampler={sampler_last}, "
+            f"reporter={reporter_last}, housekeeping={housekeeping_last}"
+        )
+except KeyboardInterrupt:
+    logger.info("Keyboard interrupt received")
+    shutdown_event.set()
 ```
 
-**Full fix (preferred):** Extend `KafkaConfig` with optional SASL/TLS fields and pass them conditionally:
+`shutdown_event.wait(timeout=30)` returns `True` (truthy) when the event is set — terminating
+the `while not` loop immediately — or `False` after 30 seconds, allowing a heartbeat log.
+The `except KeyboardInterrupt` block remains as a defence against environments where the
+default SIGINT handler bypasses the custom one (e.g., a second rapid `^C`).
+
+**Secondary improvement (recommended but not critical):** The `thread.join(timeout=10)` loop
+is sequential. In the (now uncommon) case where a thread is mid-Kafka-call at shutdown and
+takes longer than 10 seconds to exit, joins stack linearly. Consider joining threads
+concurrently via a shared deadline:
 
 ```python
-@dataclass
-class KafkaConfig:
-    bootstrap_servers: str
-    security_protocol: str = "PLAINTEXT"
-    sasl_mechanism: Optional[str] = None
-    sasl_username: Optional[str] = None
-    sasl_password: Optional[str] = None
-    ssl_ca_location: Optional[str] = None
+deadline = time.time() + 10
+for thread in threads:
+    remaining = max(0, deadline - time.time())
+    thread.join(timeout=remaining)
+    if thread.is_alive():
+        logger.warning(f"Thread {thread.name} did not stop within timeout")
 ```
 
-In `build_admin_client`, conditionally add keys:
-```python
-if config.kafka.sasl_mechanism:
-    conf["sasl.mechanism"] = config.kafka.sasl_mechanism
-if config.kafka.sasl_username:
-    conf["sasl.username"] = config.kafka.sasl_username
-if config.kafka.sasl_password:
-    conf["sasl.password"] = config.kafka.sasl_password
-if config.kafka.ssl_ca_location:
-    conf["ssl.ca.location"] = config.kafka.ssl_ca_location
-```
+This caps total join wait at ~10 seconds regardless of thread count, rather than 10s × N.
 
-Add corresponding optional parsing in `load_config` (not required, defaults to None). Do not raise `ConfigError` if SASL fields are absent when `security_protocol` is non-PLAINTEXT — that is a runtime concern handled by the client. Log a warning if protocol is non-PLAINTEXT and SASL fields are None.
+**Notes:** Do not remove `time` from the imports — it is still used in `verify_kafka_connectivity`
+and `run_with_restart`. The `except KeyboardInterrupt` block may become unreachable in normal
+operation but retains value as a belt-and-braces defence. After this fix, the observed shutdown
+time should be < 3 seconds in the common case.
 
-**Notes:** Do not log `sasl_password` value in any log output. Minimum viable fix is acceptable for immediate deployment; full fix is preferred if SASL is needed in the near term.
+**Tests:** See TASK 53.
 
 ---
 
-### 🟡 LOW — TASK 48: `init_db` return value discarded — connection leaks to GC (carry-forward)
+## 🟡 LOW — TASK 52: `get_interpolation_points` limit is hardcoded at 1000 — decouple from config
 
-**Files:** `main.py`
+**File:** `database.py`, `sampler.py`, `reporter.py`
 
-**Bug (carry-forward from TASKS-3.md TASK 38):** `database.init_db(cfg.database.path)` returns a `sqlite3.Connection` that is silently discarded. Connection is closed by CPython reference counting, but the pattern implies `init_db` is void. Any developer reading `main.py` may assume `init_db` has no meaningful return value and that pattern is not to be followed.
+**Context:**
+TASK 50 from TASKS-4 added a `LIMIT 1000` to `get_interpolation_points`. This is better than
+no limit but is a magic number disconnected from `max_entries_per_partition` in config.
+Consider: if an operator sets `max_entries_per_partition: 2000` (valid per TASK 49's `>= 2`
+constraint), housekeeping will retain 2000 rows per partition, but the interpolation query
+will silently cap at 1000 — returning an incomplete view of the historical data and potentially
+degrading lag accuracy. The fix as originally specified in TASK 50 is straightforward and correct.
 
-**Fix:** Close explicitly:
+**Expected outcome:** The interpolation query fetches up to `max_entries_per_partition` rows
+(passed by the caller from config), with a safe default for any call site that does not supply
+a limit. The magic number 1000 is eliminated.
 
-```python
-init_conn = database.init_db(cfg.database.path)
-init_conn.close()
-logger.info(f"Database initialized at {cfg.database.path}")
-```
+**Implementation — three locations:**
 
-Or restructure `init_db` to close internally and return `None`. If restructuring: verify no caller uses the returned connection (currently none do).
-
----
-
-### 🟡 LOW — TASK 49: No range validation on monitoring config integer values (carry-forward)
-
-**Files:** `config.py`
-
-**Bug (carry-forward from TASKS-3.md TASK 40):** All `MonitoringConfig` integer fields accept any value including zero and negative. `sample_interval_seconds=0` causes `sleep_time` to always be negative → sampler busy-loops at full CPU, hammering Kafka and SQLite. `max_entries_per_partition=0` causes `prune_partition_offsets` to delete all rows, destroying interpolation history. `offline_detection_consecutive_samples=0` causes immediate OFFLINE for all new groups. No `ConfigError` is raised.
-
-**Fix:** Add post-parse range validation in `load_config` for the following fields and constraints:
-
-```python
-# After all integer fields are parsed, before constructing MonitoringConfig:
-if sample_interval_seconds <= 0:
-    raise ConfigError("monitoring.sample_interval_seconds must be > 0")
-if offline_sample_interval_seconds < sample_interval_seconds:
-    raise ConfigError(
-        "monitoring.offline_sample_interval_seconds must be >= sample_interval_seconds"
-    )
-if report_interval_seconds <= 0:
-    raise ConfigError("monitoring.report_interval_seconds must be > 0")
-if housekeeping_interval_seconds <= 0:
-    raise ConfigError("monitoring.housekeeping_interval_seconds must be > 0")
-if max_entries_per_partition < 2:
-    raise ConfigError("monitoring.max_entries_per_partition must be >= 2")
-if max_commit_entries_per_partition < 2:
-    raise ConfigError("monitoring.max_commit_entries_per_partition must be >= 2")
-if offline_detection_consecutive_samples < 1:
-    raise ConfigError("monitoring.offline_detection_consecutive_samples must be >= 1")
-if recovering_minimum_duration_seconds < 0:
-    raise ConfigError("monitoring.recovering_minimum_duration_seconds must be >= 0")
-if online_lag_threshold_seconds < 0:
-    raise ConfigError("monitoring.online_lag_threshold_seconds must be >= 0")
-if absent_group_retention_seconds <= 0:
-    raise ConfigError("monitoring.absent_group_retention_seconds must be > 0")
-```
-
-**Notes:** `max_entries_per_partition >= 2` (not 1) because interpolation requires at least two distinct points to bracket a committed offset. A value of 1 would mean at most one row per partition — interpolation always extrapolates, lag is always inaccurate. Write tests for each constraint: one test per invalid value asserting `ConfigError` is raised with a meaningful message.
-
----
-
-### 🟡 LOW — TASK 50: `get_interpolation_points` — add defensive LIMIT equal to `max_entries_per_partition`
-
-**Files:** `database.py`
-
-**Context:** Housekeeping bounds `partition_offsets` row count to `max_entries_per_partition` (default 300). The `get_interpolation_points` query has no LIMIT — in normal operation, housekeeping keeps the table bounded and this is not a production risk. The concern is a timing window (rows accumulate between housekeeping cycles) and a misconfiguration risk (if `max_entries_per_partition` is set very high, TASK 49 does not cap it). This is defensive hardening, not a fix for an active bug.
-
-**Fix:** Add `LIMIT` to the query equal to the configured maximum. Since `database.py` functions do not receive config, the simplest approach is a caller-supplied `limit` parameter with a safe default:
+**1. `database.py` — add `limit` parameter:**
 
 ```python
 def get_interpolation_points(
     conn: sqlite3.Connection, topic: str, partition: int, limit: int = 500
 ) -> List[Tuple[int, int]]:
+    """Get interpolation points for a topic/partition ordered by sampled_at DESC.
+
+    Returns up to `limit` most recent points. Callers should pass
+    max_entries_per_partition from config to align with housekeeping bounds.
+
+    Args:
+        conn: Database connection
+        topic: Topic name
+        partition: Partition number
+        limit: Maximum rows to return (default: 500)
+
+    Returns:
+        List of (offset, sampled_at) tuples ordered by sampled_at DESC
+    """
     cursor = conn.execute(
         """SELECT offset, sampled_at FROM partition_offsets
            WHERE topic = ? AND partition = ?
@@ -339,7 +169,669 @@ def get_interpolation_points(
     return [(row[0], row[1]) for row in cursor.fetchall()]
 ```
 
-Update callers in `sampler.py` and `reporter.py` to pass `self._config.monitoring.max_entries_per_partition` as the limit. Default of 500 provides safety for callers that do not pass a limit.
+**2. `sampler.py` — `_calculate_max_lag`, pass configured limit:**
 
-**Notes:** This is the lowest priority task in this round. Do not prioritise it above TASK 42–45. The interpolation algorithm only needs two bracketing rows but the current implementation fetches all rows and scans them — refactoring to a two-query fetch (one row above, one below the committed offset) would be a more correct fix but is a larger change and out of scope here.
+```python
+interpolation_points = database.get_interpolation_points(
+    self._db_conn,
+    topic,
+    partition,
+    self._config.monitoring.max_entries_per_partition,   # ADD THIS
+)
+```
 
+**3. `reporter.py` — `_process_consumer`, pass configured limit:**
+
+```python
+interpolation_points = database.get_interpolation_points(
+    self._db_conn,
+    topic,
+    partition,
+    self._config.monitoring.max_entries_per_partition,   # ADD THIS
+)
+```
+
+**Notes:** The default of 500 is a safe backstop for any future call sites (e.g., tests,
+CLI tools) that do not supply a limit. It is lower than the now-removed hardcoded 1000 but
+higher than the default `max_entries_per_partition` of 300, providing headroom. No other
+callers of `get_interpolation_points` exist in the current codebase. The interpolation
+algorithm scans all returned rows to find bracketing points — it does not need all rows, only
+the two that bracket the committed offset. A future optimisation (two targeted queries: one
+for the nearest row above the committed offset, one below) would eliminate this scan entirely
+and make the limit irrelevant, but that is explicitly out of scope here.
+
+**Tests:** See TASK 59.
+
+---
+
+## 🟡 LOW — TASK 53: Test that shutdown completes quickly after `shutdown_event` is set
+
+**File:** `src/tests/test_main.py` (new file)
+
+**Reason:** TASK 51 fixes a shutdown delay caused by `time.sleep(30)` not responding to the
+shutdown event. Without a test, this regression could silently reappear if the heartbeat loop
+is refactored back to `time.sleep()`. This is the only test that guards against the PEP 475
+sleep behaviour.
+
+**Implementation:**
+
+```python
+import threading
+import time
+import pytest
+
+
+def test_shutdown_event_wait_exits_immediately():
+    """
+    Verify that shutdown_event.wait() returns instantly when event is set.
+
+    Regression test for TASK 51. If this is replaced with time.sleep(30),
+    this test will not catch the regression — the separate shutdown timing
+    test below covers that scenario.
+    """
+    shutdown_event = threading.Event()
+    results = []
+
+    def waiter():
+        start = time.time()
+        shutdown_event.wait(timeout=30)
+        results.append(time.time() - start)
+
+    t = threading.Thread(target=waiter)
+    t.start()
+    time.sleep(0.05)
+    shutdown_event.set()
+    t.join(timeout=2)
+
+    assert not t.is_alive(), "Thread should have exited"
+    assert results[0] < 1.0, f"Wait took {results[0]:.2f}s — expected < 1s"
+
+
+def test_main_heartbeat_exits_within_one_second_of_shutdown():
+    """
+    Simulate the main heartbeat loop and verify it exits < 1 second after
+    shutdown_event is set. This guards against regression to time.sleep(30).
+
+    The heartbeat pattern under test:
+        while not shutdown_event.wait(timeout=30):
+            logger.debug("heartbeat")
+    """
+    shutdown_event = threading.Event()
+    exited_at = []
+
+    def heartbeat_loop():
+        while not shutdown_event.wait(timeout=30):
+            pass  # simulates heartbeat body
+        exited_at.append(time.time())
+
+    t = threading.Thread(target=heartbeat_loop)
+    t.start()
+    time.sleep(0.1)
+
+    set_at = time.time()
+    shutdown_event.set()
+    t.join(timeout=2)
+
+    assert not t.is_alive()
+    assert exited_at, "Heartbeat loop never exited"
+    assert exited_at[0] - set_at < 1.0, (
+        f"Heartbeat loop took {exited_at[0] - set_at:.2f}s to exit after shutdown — "
+        "regression: time.sleep() was likely reintroduced"
+    )
+```
+
+**Expected outcome:** Both tests pass in < 1 second. If `time.sleep(30)` is ever reintroduced
+in the heartbeat loop, `test_main_heartbeat_exits_within_one_second_of_shutdown` will fail
+with a clear message.
+
+---
+
+## 🔴 HIGH — TASK 54: Test that DB reconnect actually produces a working connection (Sampler, Reporter, Housekeeping)
+
+**Files:** `src/tests/test_sampler.py`, `src/tests/test_reporter.py`, `src/tests/test_housekeeping.py`
+
+**Reason:** The existing `test_database_write_error_handled_gracefully` in `test_sampler.py`
+only asserts that the error is caught without crashing. It does **not** verify that:
+1. A new connection is obtained after the error.
+2. The subsequent cycle succeeds using that new connection.
+
+This is the highest-value missing test in the suite. The reconnect logic in TASK 42 is the
+only thing preventing silent data loss after a transient DB error. An incorrect reconnect
+(e.g., reconnecting to the wrong path, or failing silently) would not be caught by the current
+test. The same gap exists for Reporter and Housekeeping.
+
+**Implementation — Sampler (add to `TestSamplerRunLoop` or a new class):**
+
+```python
+def test_db_reconnect_on_database_error_and_next_cycle_succeeds(self, db_path, db_conn):
+    """
+    TASK 42 regression: after a sqlite3.DatabaseError mid-cycle, the sampler
+    must obtain a fresh connection and succeed on the next cycle.
+    """
+    import sqlite3
+    from unittest.mock import MagicMock, patch
+    import threading
+
+    config = make_test_config()
+    state_mgr = MockStateManager()
+
+    mock_kafka = MagicMock()
+    mock_kafka.get_active_consumer_groups.return_value = ["group1"]
+    mock_kafka.get_all_consumed_topic_partitions.return_value = {
+        "group1": {("topic1", 0)}
+    }
+    mock_kafka.get_latest_produced_offsets.return_value = {("topic1", 0): 100}
+    mock_kafka.get_committed_offsets.return_value = {("topic1", 0): 50}
+
+    call_count = {"n": 0}
+    original_insert = database.insert_consumer_commit
+
+    def insert_side_effect(*args, **kwargs):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise sqlite3.OperationalError("database is locked")
+        return original_insert(*args, **kwargs)
+
+    new_conn_calls = []
+    original_get_connection = database.get_connection
+
+    def tracking_get_connection(path):
+        conn = original_get_connection(path)
+        new_conn_calls.append(conn)
+        return conn
+
+    with patch("sampler.database.insert_consumer_commit", side_effect=insert_side_effect), \
+         patch("sampler.database.get_connection", side_effect=tracking_get_connection):
+
+        s = Sampler(config, db_path, mock_kafka, state_mgr)
+        initial_conn = s._db_conn
+
+        # Run exactly two cycles: error on cycle 1, succeed on cycle 2
+        shutdown_event = threading.Event()
+        cycle_count = {"n": 0}
+        original_wait = shutdown_event.wait
+
+        def controlled_wait(timeout=None):
+            cycle_count["n"] += 1
+            if cycle_count["n"] >= 2:
+                shutdown_event.set()
+            return original_wait(timeout=0.01)
+
+        shutdown_event.wait = controlled_wait
+        s.run(shutdown_event)
+
+    # A new connection must have been obtained after the error
+    assert len(new_conn_calls) >= 1, "No reconnect occurred after DatabaseError"
+    assert s._db_conn is not initial_conn, "Connection was not replaced after error"
+```
+
+**Nuance:** The test uses a side-effect counter to raise the error only on cycle 1, then
+succeed on cycle 2. Asserting `s._db_conn is not initial_conn` is the key correctness check —
+it verifies the object reference changed, not just that no exception was raised.
+
+**Reporter and Housekeeping:** Write analogous tests in their respective test files. For
+Housekeeping, patch `database.prune_partition_offsets` to raise on first call; verify
+`h._db_conn` is replaced. For Reporter, patch `database.get_all_commit_keys`.
+
+**Expected outcome:** Tests confirm that after a `sqlite3.DatabaseError`, the affected thread
+replaces its connection and the following cycle executes successfully using the new connection.
+
+---
+
+## 🔴 HIGH — TASK 55: Test that housekeeping prune operations actually delete rows from DB
+
+**File:** `src/tests/test_housekeeping.py`
+
+**Reason:** TASK 43 fixed a critical bug where prune operations logged correct rowcounts but
+silently rolled back due to missing `commit_batch()`. The existing `test_cycle_logs_summary`
+test only inserts 10 rows (below pruning thresholds) and only checks the log message — it
+does not verify actual DB state. A regression to the missing-commit behaviour would not be
+caught.
+
+**Implementation:**
+
+```python
+def test_housekeeping_cycle_actually_deletes_rows_from_partition_offsets(
+    self, db_path_initialized, db_conn, mock_config
+):
+    """
+    TASK 43 regression: after _run_cycle(), rows exceeding max_entries_per_partition
+    must be physically absent from the database — not just reported as deleted.
+
+    The pre-fix bug was: prune functions issued conn.commit() per-partition but
+    housekeeping._run_cycle() had no final commit_batch(), causing all DELETEs
+    to roll back silently while rowcount was still reported correctly.
+    """
+    max_entries = mock_config.monitoring.max_entries_per_partition
+    insert_count = max_entries + 50  # exceed limit by 50
+
+    now = int(time.time())
+    for i in range(insert_count):
+        database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
+    database.commit_batch(db_conn)
+
+    # Verify setup: rows exist above threshold
+    pre_count = db_conn.execute(
+        "SELECT COUNT(*) FROM partition_offsets WHERE topic='topic1' AND partition=0"
+    ).fetchone()[0]
+    assert pre_count == insert_count
+
+    hk = Housekeeping(mock_config, db_path_initialized)
+    hk._run_cycle()
+
+    # Query via a SEPARATE connection to confirm the commit reached the DB file
+    verify_conn = database.get_connection(db_path_initialized)
+    post_count = verify_conn.execute(
+        "SELECT COUNT(*) FROM partition_offsets WHERE topic='topic1' AND partition=0"
+    ).fetchone()[0]
+    verify_conn.close()
+
+    assert post_count == max_entries, (
+        f"Expected {max_entries} rows after pruning, found {post_count}. "
+        "Regression: commit_batch() may be missing from _run_cycle()."
+    )
+
+
+def test_housekeeping_cycle_actually_deletes_rows_from_consumer_commits(
+    self, db_path_initialized, db_conn, mock_config
+):
+    """Same as above for consumer_commits table."""
+    max_entries = mock_config.monitoring.max_commit_entries_per_partition
+    insert_count = max_entries + 50
+    now = int(time.time())
+
+    for i in range(insert_count):
+        database.insert_consumer_commit(db_conn, "group1", "topic1", 0, i, now - i)
+    database.commit_batch(db_conn)
+
+    hk = Housekeeping(mock_config, db_path_initialized)
+    hk._run_cycle()
+
+    verify_conn = database.get_connection(db_path_initialized)
+    post_count = verify_conn.execute(
+        "SELECT COUNT(*) FROM consumer_commits "
+        "WHERE group_id='group1' AND topic='topic1' AND partition=0"
+    ).fetchone()[0]
+    verify_conn.close()
+
+    assert post_count == max_entries, (
+        f"Expected {max_entries} rows, found {post_count}. "
+        "Regression: commit_batch() may be missing from _run_cycle()."
+    )
+```
+
+**Nuance — use a separate connection for verification:** The most important detail here is
+reading the post-cycle state via a *different* connection than the one housekeeping used.
+SQLite WAL mode allows multiple readers with one writer. Using a separate connection confirms
+the transaction was committed to the DB file, not just visible within the writer's own
+connection (which would be the case even without a commit, due to SQLite's read-your-own-writes
+behaviour within a connection).
+
+**Expected outcome:** Both tests pass, confirming rows are actually deleted (not just reported
+as deleted). If `commit_batch()` is removed from `_run_cycle()`, both tests fail with a clear
+message showing `post_count == insert_count`.
+
+---
+
+## 🟠 MEDIUM — TASK 56: Test main() exits with code 1 when output directory does not exist
+
+**File:** `src/tests/test_main.py` (new file, same as TASK 53)
+
+**Reason:** TASK 45 added output directory validation to `main()`. The task specification
+explicitly required a test asserting exit code 1 with a nonexistent parent directory. No
+`test_main.py` exists in the test suite. Without this test, a refactor that moves or removes
+the directory check would be undetected.
+
+**Implementation:**
+
+```python
+import sys, os
+import pytest
+from unittest.mock import patch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import main as main_module
+from config import (
+    Config, KafkaConfig, MonitoringConfig, DatabaseConfig,
+    OutputConfig, ExcludeConfig
+)
+
+
+def make_minimal_config(json_path: str) -> Config:
+    """Build a minimal Config with the given json_path for testing main()."""
+    return Config(
+        kafka=KafkaConfig(bootstrap_servers="localhost:9092"),
+        monitoring=MonitoringConfig(
+            sample_interval_seconds=30,
+            offline_sample_interval_seconds=1800,
+            report_interval_seconds=30,
+            housekeeping_interval_seconds=900,
+            max_entries_per_partition=300,
+            max_commit_entries_per_partition=100,
+            offline_detection_consecutive_samples=5,
+            recovering_minimum_duration_seconds=900,
+            online_lag_threshold_seconds=600,
+        ),
+        database=DatabaseConfig(path="/tmp/test.db"),
+        output=OutputConfig(json_path=json_path),
+        exclude=ExcludeConfig(topics=set(), groups=set()),
+    )
+
+
+def test_main_returns_1_when_output_directory_does_not_exist(tmp_path):
+    """
+    TASK 45 regression: main() must return exit code 1 when the parent
+    directory of output.json_path does not exist.
+    """
+    nonexistent = str(tmp_path / "does_not_exist" / "output.json")
+    cfg = make_minimal_config(nonexistent)
+
+    with patch("main.config_module.load_config", return_value=cfg), \
+         patch("sys.argv", ["main.py", "--config", "dummy.yaml"]):
+        result = main_module.main()
+
+    assert result == 1, f"Expected exit code 1, got {result}"
+
+
+def test_main_proceeds_past_output_dir_check_when_dir_exists(tmp_path):
+    """
+    Verify a valid output directory does not trigger the early exit.
+    Stop after the DB init step (mocked) to avoid requiring Kafka.
+    """
+    valid_path = str(tmp_path / "output.json")
+    cfg = make_minimal_config(valid_path)
+
+    with patch("main.config_module.load_config", return_value=cfg), \
+         patch("main.database.init_db", side_effect=RuntimeError("stop")), \
+         patch("sys.argv", ["main.py", "--config", "dummy.yaml"]):
+        result = main_module.main()
+
+    # Result will be 1 due to the mocked DB error — that's fine.
+    # The key check: the RuntimeError from init_db was raised, which means
+    # the output directory check was passed successfully.
+    # If output dir check had fired, init_db would never be reached.
+
+
+def test_main_bare_filename_does_not_false_positive(tmp_path, monkeypatch):
+    """
+    Edge case: a bare filename (no directory component, e.g. 'output.json')
+    refers to the current working directory, which always exists.
+    The output directory check must not reject this.
+    """
+    monkeypatch.chdir(tmp_path)
+    cfg = make_minimal_config("output.json")  # no directory component
+
+    with patch("main.config_module.load_config", return_value=cfg), \
+         patch("main.database.init_db", side_effect=RuntimeError("stop")), \
+         patch("sys.argv", ["main.py", "--config", "dummy.yaml"]):
+        # If this raises RuntimeError (from init_db mock), the dir check passed.
+        # If it returns 1 before reaching init_db, the check false-fired.
+        result = main_module.main()
+```
+
+**Expected outcome:** `test_main_returns_1_when_output_directory_does_not_exist` passes
+immediately. `test_main_bare_filename_does_not_false_positive` confirms the edge case is
+handled without a false exit-code-1.
+
+---
+
+## 🟠 MEDIUM — TASK 57: Test cross-episode `consecutive_static` accumulation is prevented
+
+**File:** `src/tests/test_sampler.py`
+
+**Reason:** The existing `test_consecutive_static_reset_when_caught_up` tests the basic reset
+behaviour. It does not test the specific failure mode described in TASK 44 — that a counter
+partially accumulated across multiple lag episodes (separated by a caught-up period) does not
+trigger a premature OFFLINE transition. This is the exact scenario that motivated the bug fix
+and is not covered.
+
+**Implementation:**
+
+```python
+def test_consecutive_static_does_not_accumulate_across_caught_up_episodes(
+    self, db_path, db_conn
+):
+    """
+    TASK 44 regression: consecutive_static must not accumulate across separate
+    lag episodes separated by caught-up periods.
+
+    Scenario:
+      - threshold = 5
+      - Pre-seed state: consecutive_static = 4 (one away from OFFLINE)
+      - Run one caught-up cycle (no lag, static offsets)
+      - Assert counter resets to 0, status remains ONLINE
+      - Run one static-with-lag cycle
+      - Assert counter is 1 (not 5), no OFFLINE transition
+    """
+    threshold = 5
+    config = make_test_config()
+    config.monitoring.offline_detection_consecutive_samples = threshold
+    state_mgr = MockStateManager()
+    mock_kafka = MagicMock()
+
+    s = Sampler(config, db_path, mock_kafka, state_mgr)
+
+    # Seed: 4 cycles of static-with-lag already accumulated
+    state_mgr.set_group_status(
+        "group1", "topic1", "ONLINE",
+        status_changed_at=int(time.time()) - 100,
+        last_advancing_at=int(time.time()) - 100,
+        consecutive_static=threshold - 1,
+    )
+
+    now = int(time.time())
+    produced = 1000
+
+    # Caught-up state: committed == produced (no lag), same offset across samples
+    db_conn.execute("DELETE FROM consumer_commits")
+    for i in range(threshold):
+        db_conn.execute(
+            "INSERT INTO consumer_commits VALUES (?,?,?,?,?)",
+            ("group1", "topic1", 0, produced, now - i)
+        )
+    db_conn.execute("DELETE FROM partition_offsets")
+    for i in range(threshold):
+        db_conn.execute(
+            "INSERT INTO partition_offsets VALUES (?,?,?,?)",
+            ("topic1", 0, produced, now - i)
+        )
+    db_conn.commit()
+
+    committed_offsets = {("topic1", 0): produced}
+    latest_offsets = {("topic1", 0): produced}
+
+    s._evaluate_state_machine(
+        "group1", "topic1", committed_offsets, latest_offsets, float(now)
+    )
+
+    status = state_mgr.get_group_status("group1", "topic1")
+    assert status["consecutive_static"] == 0, (
+        f"Expected 0 after caught-up cycle, got {status['consecutive_static']}"
+    )
+    assert status["status"] == "ONLINE", (
+        f"Expected ONLINE, got {status['status']}"
+    )
+
+    # Now one cycle of static-with-lag — counter must be 1, not 5
+    committed = 500  # has lag
+    db_conn.execute("DELETE FROM consumer_commits")
+    for i in range(threshold):
+        db_conn.execute(
+            "INSERT INTO consumer_commits VALUES (?,?,?,?,?)",
+            ("group1", "topic1", 0, committed, now - i)
+        )
+    db_conn.commit()
+
+    committed_offsets = {("topic1", 0): committed}
+    s._evaluate_state_machine(
+        "group1", "topic1", committed_offsets, latest_offsets, float(now)
+    )
+
+    status = state_mgr.get_group_status("group1", "topic1")
+    assert status["consecutive_static"] == 1, (
+        f"Expected 1 after one lag cycle post-reset, got {status['consecutive_static']}. "
+        "Regression: counter was not cleared during caught-up period"
+    )
+    assert status["status"] == "ONLINE", (
+        "OFFLINE transition fired prematurely — cross-episode accumulation regression"
+    )
+```
+
+**Expected outcome:** Test passes. If the `else: new_consecutive_static = 0` line is removed
+from `_evaluate_state_machine`, this test fails with `consecutive_static=5` and a premature
+OFFLINE transition.
+
+---
+
+## 🟡 LOW — TASK 58: Test ghost group partition_offsets are kept fresh (Task 32 coverage)
+
+**File:** `src/tests/test_sampler.py`
+
+**Reason:** TASK 32 fixed the case where a group active in Kafka with zero members (`Empty`
+state) would have its `partition_offsets` go stale — causing lag to permanently report 0.
+No test explicitly covers this scenario. The fix is in `_process_group` and is the most
+complex logic added in recent rounds.
+
+**Implementation:**
+
+```python
+def test_ghost_group_partition_offsets_written_when_active_but_zero_members(
+    self, db_path, db_conn
+):
+    """
+    TASK 32 regression: a group that appears in get_active_consumer_groups()
+    but has zero active members (empty group_partitions) must still have
+    partition_offsets written to keep interpolation data fresh.
+
+    Pre-fix: _process_group called _handle_idle_group but never wrote
+    partition_offsets, so interpolation stalled and lag reported 0 forever.
+    """
+    from unittest.mock import MagicMock
+
+    config = make_test_config()
+    state_mgr = MockStateManager()
+    mock_kafka = MagicMock()
+
+    s = Sampler(config, db_path, mock_kafka, state_mgr)
+
+    # Seed DB history so has_group_history() returns True
+    now = int(time.time())
+    db_conn.execute(
+        "INSERT INTO consumer_commits VALUES (?,?,?,?,?)",
+        ("ghost-group", "topic1", 0, 400, now - 60)
+    )
+    db_conn.execute(
+        "INSERT INTO partition_offsets VALUES (?,?,?,?)",
+        ("topic1", 0, 490, now - 60)  # old entry
+    )
+    db_conn.commit()
+
+    # Group is in Kafka but has zero members → empty partition set
+    latest_offsets = {("topic1", 0): 500}
+    group_topic_partitions = {"ghost-group": set()}
+
+    s._process_group("ghost-group", group_topic_partitions, latest_offsets, float(now))
+    database.commit_batch(s._db_conn)
+
+    rows = db_conn.execute(
+        "SELECT offset, sampled_at FROM partition_offsets "
+        "WHERE topic='topic1' AND partition=0 "
+        "ORDER BY sampled_at DESC LIMIT 1"
+    ).fetchone()
+
+    assert rows is not None, "No partition_offset row found after ghost group cycle"
+    assert rows[0] == 500, f"Expected HWM offset 500, got {rows[0]}"
+    assert rows[1] == int(now), (
+        "partition_offset timestamp not updated — ghost group data is stale. "
+        "Regression: has_group_history block removed from _process_group."
+    )
+
+    # Group must also be transitioned to OFFLINE
+    status = state_mgr.get_group_status("ghost-group", "topic1")
+    assert status["status"] == "OFFLINE", (
+        f"Ghost group should be OFFLINE, got {status['status']}"
+    )
+```
+
+**Expected outcome:** Test passes, confirming fresh `partition_offsets` are written for
+zero-member active groups. If the `has_group_history` block is removed from `_process_group`,
+the test fails with stale offset data and the lag-permanently-zero bug is re-introduced.
+
+---
+
+## 🟡 LOW — TASK 59: Test `get_interpolation_points` respects the limit parameter
+
+**File:** `src/tests/test_database.py`
+
+**Reason:** After TASK 52 adds the `limit` parameter to `get_interpolation_points`, a test
+should verify the parameter is respected. Additionally, the default (500) must be enforced
+when no limit is passed. These tests did not exist before because the function had a
+hardcoded limit.
+
+**Implementation:**
+
+```python
+def test_get_interpolation_points_respects_limit(db_conn):
+    """TASK 52: get_interpolation_points must return at most `limit` rows."""
+    now = int(time.time())
+    for i in range(20):
+        database.insert_partition_offset(db_conn, "topic1", 0, i * 10, now - i)
+    database.commit_batch(db_conn)
+
+    result = database.get_interpolation_points(db_conn, "topic1", 0, limit=5)
+    assert len(result) == 5, f"Expected 5 rows with limit=5, got {len(result)}"
+
+
+def test_get_interpolation_points_default_limit_is_safe(db_conn):
+    """
+    Default limit (500) must be applied when no limit is passed explicitly.
+    Insert 600 rows; expect at most 500 returned.
+    """
+    now = int(time.time())
+    for i in range(600):
+        database.insert_partition_offset(db_conn, "topic1", 0, i, now - i)
+    database.commit_batch(db_conn)
+
+    result = database.get_interpolation_points(db_conn, "topic1", 0)
+    assert len(result) <= 500, (
+        f"Default limit not enforced: got {len(result)} rows, expected <= 500"
+    )
+
+
+def test_get_interpolation_points_returns_most_recent_rows(db_conn):
+    """
+    When limit truncates results, the most recent rows (highest sampled_at)
+    must be returned, ordered DESC by sampled_at.
+    """
+    now = int(time.time())
+    for i in range(10):
+        database.insert_partition_offset(db_conn, "topic1", 0, i * 100, now - i)
+    database.commit_batch(db_conn)
+
+    result = database.get_interpolation_points(db_conn, "topic1", 0, limit=3)
+    assert len(result) == 3
+    assert result[0][1] == now       # most recent first
+    assert result[1][1] == now - 1
+    assert result[2][1] == now - 2
+```
+
+**Expected outcome:** All three tests pass after TASK 52 is implemented. The second test
+would fail with the old hardcoded `LIMIT 1000` if 600 rows are inserted (1000 > 600, so
+all would be returned — the test would pass trivially). The first test correctly validates
+the parameter is wired through.
+
+---
+
+## Summary Table
+
+| Task | Priority | File(s) | Type | Guards Against |
+|------|----------|---------|------|---------------|
+| 51 | 🔴 HIGH | `main.py` | Bug fix | 21–25s shutdown delay (PEP 475 / `time.sleep`) |
+| 52 | 🟡 LOW | `database.py`, `sampler.py`, `reporter.py` | Improvement | Config-query limit mismatch |
+| 53 | 🟡 LOW | `test_main.py` (new) | Test | TASK 51 regression |
+| 54 | 🔴 HIGH | `test_sampler/reporter/housekeeping.py` | Test | TASK 42 reconnect correctness |
+| 55 | 🔴 HIGH | `test_housekeeping.py` | Test | TASK 43 silent prune rollback |
+| 56 | 🟠 MEDIUM | `test_main.py` (new) | Test | TASK 45 output dir check removal |
+| 57 | 🟠 MEDIUM | `test_sampler.py` | Test | TASK 44 cross-episode accumulation |
+| 58 | 🟡 LOW | `test_sampler.py` | Test | TASK 32 ghost group stale offsets |
+| 59 | 🟡 LOW | `test_database.py` | Test | TASK 52 limit parameter | 

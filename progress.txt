@@ -67,8 +67,15 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
   - When fixing state machine bugs, tests may be testing buggy behavior - need to update tests to reflect correct behavior
   - Added get_all_groups_with_history() function to database.py for finding idle groups with history
   - The state machine is conservative: requires positive evidence of advancement, not absence of evidence of stasis
-
+- **Learnings for future iterations:**
+  - Idle group handling should check current status before acting to avoid redundant logs/writes
+  - Groups in Kafka but with no active members (Empty state) should not be retired - only groups completely absent from Kafka
+  - When adding new config fields with defaults, make them optional in load_config with required=False
+  - Ghost group retirement runs AFTER idle group transition in the same cycle to avoid race conditions
+  - State transitions should be logged once at transition time, not every cycle
+  - The sampler's batch transaction includes group status updates, idle handling, and retirement - all committed atomically
 ---
+
 ## Progress updates
 
 ## 2026-02-23 - Idle Group Log Storm Fix + Ghost Group Retirement
@@ -95,11 +102,3 @@ RECOVERING groups are actively consuming, so they warrant "fine" resolution — 
   - docs/04-state-manager.md (documented remove_group method)
   - docs/10-idle-group-handling.md (new comprehensive documentation)
 
-- **Learnings for future iterations:**
-  - Idle group handling should check current status before acting to avoid redundant logs/writes
-  - Groups in Kafka but with no active members (Empty state) should not be retired - only groups completely absent from Kafka
-  - When adding new config fields with defaults, make them optional in load_config with required=False
-  - Ghost group retirement runs AFTER idle group transition in the same cycle to avoid race conditions
-  - State transitions should be logged once at transition time, not every cycle
-  - The sampler's batch transaction includes group status updates, idle handling, and retirement - all committed atomically
----
