@@ -1,6 +1,5 @@
 """Tests for sampler.py module."""
 
-import pytest
 import sqlite3
 import time
 from unittest.mock import MagicMock, patch
@@ -14,7 +13,6 @@ from config import (
     OutputConfig,
     ExcludeConfig,
 )
-import sampler
 from sampler import Sampler
 
 

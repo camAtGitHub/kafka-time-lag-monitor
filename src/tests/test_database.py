@@ -1,10 +1,8 @@
 """Tests for database.py module."""
 
 import pytest
-import sqlite3
 import time
 from database import (
-    init_db,
     insert_partition_offset,
     insert_consumer_commit,
     commit_batch,

@@ -51,7 +51,6 @@ class Sampler:
             get_active_consumer_groups,
             get_all_consumed_topic_partitions,
             get_latest_produced_offsets,
-            get_committed_offsets,
         )
 
         while not shutdown_event.is_set():

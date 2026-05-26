@@ -1,14 +1,9 @@
 """Tests for state_manager.py module."""
 
-import copy
-import pytest
-import sqlite3
 import threading
 import time
-from typing import Any, Dict, Tuple
 
 import database
-import state_manager
 from state_manager import StateManager
 
 

@@ -15,7 +15,7 @@ Startup Behavior Note:
 import copy
 import sqlite3
 import threading
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Tuple
 
 import database
 

@@ -6,7 +6,6 @@ from the main test suite using: pytest src/tests/test_integration.py -m integrat
 
 import json
 import os
-import sqlite3
 import sys
 import threading
 import time
@@ -331,7 +330,7 @@ class TestJSONOutput:
 
             for consumer in data["consumers"]:
                 assert consumer["lag_seconds"] >= 0, (
-                    f"lag_seconds should not be negative"
+                    "lag_seconds should not be negative"
                 )
         finally:
             sampler_module.time.sleep = original_sleep_sampler

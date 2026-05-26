@@ -5,7 +5,7 @@ Config dataclass consumed by all other modules.
 """
 
 from dataclasses import dataclass
-from typing import List, Optional, Any, Set
+from typing import Optional, Any, Set
 import yaml
 
 

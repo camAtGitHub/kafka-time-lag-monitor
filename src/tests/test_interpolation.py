@@ -1,6 +1,5 @@
 """Tests for interpolation.py module."""
 
-import pytest
 from interpolation import (
     interpolate_timestamp,
     calculate_lag_seconds,

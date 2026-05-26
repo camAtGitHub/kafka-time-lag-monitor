@@ -2,10 +2,9 @@
 
 import json
 import os
-import sqlite3
 import threading
 import time
-from unittest.mock import Mock, MagicMock
+from unittest.mock import Mock
 
 import pytest
 
@@ -14,7 +13,6 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import database
-import interpolation
 from reporter import Reporter
 
 
@@ -243,10 +241,8 @@ class TestReporterErrorHandling:
         self, db_path_initialized, mock_config, mock_state_manager, tmp_path
     ):
         """Test that JSON write errors don't crash the reporter thread."""
-        import logging
         import threading
         import time
-        import logging.handlers
 
         now = int(time.time())
         conn = database.get_connection(db_path_initialized)

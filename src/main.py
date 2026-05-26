@@ -10,7 +10,7 @@ import signal
 import sys
 import threading
 import time
-from typing import Any, Optional
+from typing import Any
 
 import config as config_module
 import database

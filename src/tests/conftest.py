@@ -1,10 +1,8 @@
 """Pytest configuration and shared fixtures."""
 
 import pytest
-import sqlite3
 import sys
 import os
-import tempfile
 
 # Add src to path for imports
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
