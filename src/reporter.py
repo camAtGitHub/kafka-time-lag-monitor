@@ -173,8 +173,17 @@ class Reporter:
             partition_lags
         )
 
-        # Determine data_resolution - ONLINE and RECOVERING both have actively advancing offsets
-        data_resolution = "fine" if status in ("online", "recovering") else "coarse"
+        # Determine data_resolution:
+        # coarse if OFFLINE, or if lag exceeds the fine history window
+        fine_window_seconds = (
+            self._config.monitoring.sample_interval_seconds
+            * self._config.monitoring.max_entries_per_partition
+        )
+        data_resolution = (
+            "coarse"
+            if (status == "offline" or max_lag > fine_window_seconds)
+            else "fine"
+        )
 
         # Build record
         record = {

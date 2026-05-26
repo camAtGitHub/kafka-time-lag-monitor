@@ -24,6 +24,7 @@ def mock_config(tmp_path):
     config = Mock()
     config.monitoring.report_interval_seconds = 1
     config.monitoring.max_entries_per_partition = 300
+    config.monitoring.sample_interval_seconds = 60
     config.output.json_path = str(tmp_path / "output.json")
     return config
 
@@ -340,7 +341,7 @@ class TestReporterDataResolution:
     def test_fine_resolution_for_online_status(
         self, db_path_initialized, mock_config, mock_state_manager
     ):
-        """Test that ONLINE status produces fine resolution."""
+        """Test that ONLINE status with lag within fine window produces fine resolution."""
         now = int(time.time())
 
         conn = database.get_connection(db_path_initialized)
@@ -369,7 +370,7 @@ class TestReporterDataResolution:
     def test_coarse_resolution_for_offline_status(
         self, db_path_initialized, mock_config, mock_state_manager
     ):
-        """Test that OFFLINE status produces coarse resolution."""
+        """Test that OFFLINE status produces coarse resolution regardless of lag."""
         now = int(time.time())
 
         conn = database.get_connection(db_path_initialized)
@@ -398,7 +399,7 @@ class TestReporterDataResolution:
     def test_fine_resolution_for_recovering_status(
         self, db_path_initialized, mock_config, mock_state_manager
     ):
-        """Test that RECOVERING status produces fine resolution."""
+        """Test that RECOVERING status with lag within fine window produces fine resolution."""
         now = int(time.time())
 
         conn = database.get_connection(db_path_initialized)
@@ -423,6 +424,83 @@ class TestReporterDataResolution:
             output = json.load(f)
 
         assert output["consumers"][0]["data_resolution"] == "fine"
+
+    def test_coarse_resolution_when_online_lag_exceeds_fine_window(
+        self, db_path_initialized, mock_config, mock_state_manager
+    ):
+        """ONLINE consumer whose lag exceeds fine history window → coarse resolution.
+
+        Fine window = sample_interval_seconds * max_entries_per_partition.
+        Use a tiny window (max_entries=2, interval=60 → 120s) and seed data that
+        extrapolates to a lag well beyond it.
+        """
+        mock_config.monitoring.max_entries_per_partition = 2
+        mock_config.monitoring.sample_interval_seconds = 60
+        # fine_window = 2 * 60 = 120s
+
+        now = int(time.time())
+        conn = database.get_connection(db_path_initialized)
+        try:
+            # Rate: 1 offset per 100 seconds → very slow
+            database.insert_partition_offset(conn, "topic1", 0, 101, now - 100)
+            database.insert_partition_offset(conn, "topic1", 0, 100, now - 200)
+            # Consumer at offset 0: 100 offsets before oldest at 1 offset/100s
+            # → extrapolated 10000s before oldest_ts → lag >> 120s fine window
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 0, now)
+            database.commit_batch(conn)
+        finally:
+            conn.close()
+
+        mock_state_manager.get_group_status.return_value = {
+            "status": "ONLINE",
+            "status_changed_at": 0,
+            "last_advancing_at": 0,
+            "consecutive_static": 0,
+        }
+
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
+        reporter._run_cycle()
+
+        with open(mock_config.output.json_path, "r") as f:
+            output = json.load(f)
+
+        consumer = output["consumers"][0]
+        assert consumer["data_resolution"] == "coarse"
+        assert consumer["status"] == "online"
+
+    def test_coarse_resolution_when_recovering_lag_exceeds_fine_window(
+        self, db_path_initialized, mock_config, mock_state_manager
+    ):
+        """RECOVERING consumer whose lag exceeds fine history window → coarse resolution."""
+        mock_config.monitoring.max_entries_per_partition = 2
+        mock_config.monitoring.sample_interval_seconds = 60
+
+        now = int(time.time())
+        conn = database.get_connection(db_path_initialized)
+        try:
+            database.insert_partition_offset(conn, "topic1", 0, 101, now - 100)
+            database.insert_partition_offset(conn, "topic1", 0, 100, now - 200)
+            database.insert_consumer_commit(conn, "group1", "topic1", 0, 0, now)
+            database.commit_batch(conn)
+        finally:
+            conn.close()
+
+        mock_state_manager.get_group_status.return_value = {
+            "status": "RECOVERING",
+            "status_changed_at": now - 600,
+            "last_advancing_at": now - 60,
+            "consecutive_static": 0,
+        }
+
+        reporter = Reporter(mock_config, db_path_initialized, mock_state_manager)
+        reporter._run_cycle()
+
+        with open(mock_config.output.json_path, "r") as f:
+            output = json.load(f)
+
+        consumer = output["consumers"][0]
+        assert consumer["data_resolution"] == "coarse"
+        assert consumer["status"] == "recovering"
 
 
 class TestReporterMultiplePartitions:

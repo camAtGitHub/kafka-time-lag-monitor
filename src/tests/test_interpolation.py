@@ -70,17 +70,47 @@ class TestCalculateLagSeconds:
         expected_lag = current_time - expected_ts
         assert result == (expected_lag, "interpolated")
 
-    def test_extrapolated_case_below_all_entries(self):
-        """Extrapolated case (committed_offset below all table entries)"""
+    def test_extrapolated_case_below_all_entries_uses_rate(self):
+        """Extrapolated: committed below all entries uses rate-based backward estimate.
+
+        Setup: oldest=(200, T-100), next=(300, T-40) → rate = 100/60 offsets/sec
+        committed=100 is 100 offsets before oldest → 60s before oldest_ts
+        estimated_ts = (T-100) - 60 = T-160
+        lag = T - (T-160) = 160... let's compute exactly.
+        """
+        base = 1597304421
+        # oldest point: offset 200 at T=base, next: offset 300 at T=base+60
         interpolation_points = [
-            (300, 1597304421),
-            (200, 1597304361),
+            (300, base + 60),   # newest
+            (200, base),        # oldest
+        ]
+        current_time = base + 700
+        # rate = (300-200)/(60) = 100/60 offsets/sec
+        # seconds_before = (200-100) / (100/60) = 60.0
+        # estimated_ts = base - 60 = base - 60
+        # lag = (base+700) - (base-60) = 760
+        result = calculate_lag_seconds(100, interpolation_points, current_time)
+        assert result[1] == "extrapolated"
+        assert result[0] == 760
+
+    def test_extrapolated_single_point_falls_back_to_oldest_ts(self):
+        """Extrapolated: single interpolation point falls back to current_time - oldest_ts."""
+        ts = 1597304361
+        interpolation_points = [(300, ts)]
+        current_time = 1597305000
+        result = calculate_lag_seconds(100, interpolation_points, current_time)
+        assert result == (current_time - ts, "extrapolated")
+
+    def test_extrapolated_zero_rate_falls_back_to_oldest_ts(self):
+        """Extrapolated: zero offset delta (static partition) falls back to oldest_ts."""
+        ts = 1597304361
+        interpolation_points = [
+            (300, ts + 60),   # newest
+            (300, ts),        # oldest — same offset, zero delta
         ]
         current_time = 1597305000
         result = calculate_lag_seconds(100, interpolation_points, current_time)
-        oldest_ts = 1597304361
-        expected_lag = current_time - oldest_ts
-        assert result == (expected_lag, "extrapolated")
+        assert result == (current_time - ts, "extrapolated")
 
 
 class TestInterpolateTimestamp:
@@ -177,3 +207,4 @@ class TestFormatLagDisplay:
         """90061 seconds = 1 day, 1 hour, 1 minute """
         result = format_lag_display(90061)
         assert result == "1 day 1 hour 1 minute"
+

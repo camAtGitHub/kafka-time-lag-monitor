@@ -103,7 +103,21 @@ def calculate_lag_seconds(
             lag = current_time - interpolated_ts
             return (lag, "interpolated")
 
-    # Case 5: Committed offset is below all table entries (extrapolation)
+    # Case 5: Committed offset is below all table entries
+    # Extrapolate backwards using observed production rate from the two oldest points
+    if len(sorted_points) >= 2:
+        lb_offset, lb_ts = sorted_points[0]
+        ub_offset, ub_ts = sorted_points[1]
+        ts_delta = ub_ts - lb_ts
+        offset_delta = ub_offset - lb_offset
+        if ts_delta > 0 and offset_delta > 0:
+            rate = offset_delta / ts_delta  # offsets per second
+            seconds_before_oldest = (lb_offset - committed_offset) / rate
+            estimated_ts = lb_ts - seconds_before_oldest
+            lag = max(0, current_time - int(estimated_ts))
+            return (lag, "extrapolated")
+
+    # Fallback: single point, zero rate, or identical offsets — use oldest timestamp
     lag = current_time - oldest_ts
     return (lag, "extrapolated")
 
@@ -177,3 +191,4 @@ def format_lag_display(lag_seconds: int) -> str:
         parts.append(f"{minutes} minute" if minutes == 1 else f"{minutes} minutes")
 
     return " ".join(parts)
+
